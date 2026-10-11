@@ -119,3 +119,238 @@ class SyscallResult(BaseModel):
             exit_code=exit_code,
             duration_sec=max(0.0, float(duration_sec)),
         )
+
+
+class SyscallDispatcher:
+    """Dispatches validated system calls to underlying OS and filesystem subsystems.
+
+    Enforces privilege separation, updates PCB state and performance metrics,
+    and logs actions to the SQLite audit database.
+    """
+
+    def __init__(
+        self,
+        privilege_gate: Optional[Any] = None,
+        process_manager: Optional[Any] = None,
+        file_engine: Optional[Any] = None,
+        db_manager: Optional[Any] = None,
+    ):
+        """Initializes the SyscallDispatcher with required subsystems.
+
+        Subsystems will be dynamically imported and instantiated with default
+        settings if not explicitly provided.
+        """
+        if privilege_gate is None:
+            from security.privilege import PrivilegeGate
+
+            self.privilege_gate = PrivilegeGate()
+        else:
+            self.privilege_gate = privilege_gate
+
+        if process_manager is None:
+            from kernel.process_manager import ProcessManager
+
+            self.process_manager = ProcessManager()
+        else:
+            self.process_manager = process_manager
+
+        if file_engine is None:
+            from kernel.file_engine import FileEngine
+
+            self.file_engine = FileEngine()
+        else:
+            self.file_engine = file_engine
+
+        self.db_manager = db_manager
+
+    def dispatch(
+        self,
+        request: SyscallRequest,
+        pcb: Optional[Any] = None,
+        user_confirmed: bool = False,
+    ) -> SyscallResult:
+        """Executes a system call through the appropriate kernel subsystem.
+
+        Args:
+            request: The SyscallRequest to execute.
+            pcb: Optional TaskPCB to transition and record metrics for.
+            user_confirmed: True if Ring 0 elevation has been granted by user.
+
+        Returns:
+            SyscallResult with execution output, exit code, and runtime metrics.
+        """
+        # 1. Update PCB lifecycle to READY -> RUNNING
+        if pcb is not None:
+            from kernel.pcb import ProcessState
+
+            if pcb.state == ProcessState.NEW:
+                pcb.transition_to(ProcessState.READY)
+            if pcb.state == ProcessState.READY:
+                pcb.transition_to(ProcessState.RUNNING)
+
+        # 2. Check privilege ring permission
+        if not self.privilege_gate.check_privilege(request, user_confirmed=user_confirmed):
+            result = SyscallResult.fail(
+                request=request,
+                error=(
+                    f"PERMISSION_DENIED: System call '{request.syscall.value}' requires "
+                    f"Ring 0 privilege elevation approval."
+                ),
+                exit_code=126,
+                duration_sec=0.0,
+            )
+            self._finalize(request, result, pcb)
+            return result
+
+        # 3. Route to subsystem
+        params = request.params or {}
+        try:
+            if request.syscall == SyscallType.PROC_SPAWN:
+                cmd = params.get("cmd")
+                if not cmd:
+                    result = SyscallResult.fail(
+                        request=request,
+                        error="Missing required parameter 'cmd'.",
+                        exit_code=1,
+                    )
+                else:
+                    result = self.process_manager.spawn(
+                        cmd=cmd,
+                        timeout_sec=params.get("timeout") or params.get("timeout_sec"),
+                        memory_limit_mb=params.get("memory_limit_mb"),
+                        cwd=params.get("cwd"),
+                        env=params.get("env"),
+                        stdin_data=params.get("stdin_data"),
+                        request=request,
+                    )
+            elif request.syscall == SyscallType.PROC_KILL:
+                pid = params.get("pid")
+                if pid is None:
+                    result = SyscallResult.fail(
+                        request=request,
+                        error="Missing required parameter 'pid'.",
+                        exit_code=1,
+                    )
+                else:
+                    result = self.process_manager.kill_process(
+                        pid=int(pid), request=request
+                    )
+            elif request.syscall == SyscallType.FILE_SEARCH:
+                result = self.file_engine.file_search(
+                    pattern=params.get("pattern", "*"),
+                    relative_to=params.get("relative_to"),
+                    max_results=params.get("max_results", 100),
+                    request=request,
+                )
+            elif request.syscall == SyscallType.FILE_READ:
+                path = params.get("path")
+                if not path:
+                    result = SyscallResult.fail(
+                        request=request,
+                        error="Missing required parameter 'path'.",
+                        exit_code=1,
+                    )
+                else:
+                    result = self.file_engine.file_read(
+                        file_path=path,
+                        max_bytes=params.get("max_bytes", 1024 * 1024),
+                        encoding=params.get("encoding", "utf-8"),
+                        request=request,
+                    )
+            elif request.syscall == SyscallType.FILE_WRITE:
+                path = params.get("path")
+                if not path:
+                    result = SyscallResult.fail(
+                        request=request,
+                        error="Missing required parameter 'path'.",
+                        exit_code=1,
+                    )
+                else:
+                    result = self.file_engine.file_write(
+                        file_path=path,
+                        content=params.get("content", ""),
+                        mode=params.get("mode", "w"),
+                        encoding=params.get("encoding", "utf-8"),
+                        request=request,
+                    )
+            elif request.syscall == SyscallType.FILE_MOVE:
+                src = params.get("src")
+                dest = params.get("dest")
+                if not src or not dest:
+                    result = SyscallResult.fail(
+                        request=request,
+                        error="Missing required parameters 'src' and 'dest'.",
+                        exit_code=1,
+                    )
+                else:
+                    result = self.file_engine.file_move(
+                        src_path=src, dest_path=dest, request=request
+                    )
+            elif request.syscall == SyscallType.FILE_DELETE:
+                path = params.get("path")
+                if not path:
+                    result = SyscallResult.fail(
+                        request=request,
+                        error="Missing required parameter 'path'.",
+                        exit_code=1,
+                    )
+                else:
+                    result = self.file_engine.file_delete(
+                        file_path=path,
+                        quarantine=params.get("quarantine", True),
+                        request=request,
+                    )
+            elif request.syscall == SyscallType.SYS_INFO:
+                result = self.file_engine.get_sys_info(request=request)
+            else:
+                result = SyscallResult.fail(
+                    request=request,
+                    error=f"Unsupported system call type: '{request.syscall}'",
+                    exit_code=38,
+                )
+        except Exception as exc:
+            result = SyscallResult.fail(
+                request=request,
+                error=f"Unhandled kernel exception during '{request.syscall.value}': {exc}",
+                exit_code=1,
+            )
+
+        # 4. Finalize PCB & audit log
+        self._finalize(request, result, pcb)
+        return result
+
+    def _finalize(
+        self,
+        request: SyscallRequest,
+        result: SyscallResult,
+        pcb: Optional[Any] = None,
+    ) -> None:
+        """Updates PCB metrics/lifecycle and logs syscall audit records."""
+        if pcb is not None:
+            from kernel.pcb import ProcessState
+
+            cpu_time = 0.0
+            peak_mem = 0.0
+            if result.data and isinstance(result.data, dict):
+                cpu_time = float(result.data.get("cpu_time", 0.0))
+                peak_mem = float(result.data.get("peak_memory_mb", 0.0))
+
+            pcb.record_metrics(
+                cpu_time=cpu_time,
+                peak_memory_mb=peak_mem,
+                exit_code=result.exit_code,
+                error_msg=result.error,
+            )
+            if pcb.state != ProcessState.TERMINATED:
+                pcb.transition_to(ProcessState.TERMINATED)
+
+            if self.db_manager is not None:
+                self.db_manager.save_task(pcb)
+
+        if self.db_manager is not None:
+            self.db_manager.log_syscall(
+                request=request,
+                result=result,
+                pid=pcb.pid if pcb is not None else None,
+            )
+
