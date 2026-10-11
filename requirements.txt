@@ -1,0 +1,22 @@
+# Core Desktop Interface
+PyQt6>=6.6.0
+
+# OS Process & Hardware Telemetry
+psutil>=5.9.8
+
+# Data Modeling & Validation
+pydantic>=2.6.0
+
+# Environment Configuration
+python-dotenv>=1.0.1
+
+# HTTP Client for Ollama & APIs
+requests>=2.31.0
+httpx>=0.27.0
+
+# Optional Cloud LLM Providers (for online reasoning)
+google-genai>=0.1.1
+openai>=1.14.0
+
+# Automated Testing
+pytest>=8.0.0
