@@ -29,6 +29,7 @@ from kernel.syscalls import (
     SyscallResult,
     SyscallType,
 )
+from kernel.telemetry import TelemetryDaemon
 
 __all__ = [
     "ProcessState",
@@ -51,5 +52,6 @@ __all__ = [
     "QueueFullError",
     "QueueEmptyError",
     "QueueShutdownError",
+    "TelemetryDaemon",
 ]
 
