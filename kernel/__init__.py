@@ -11,6 +11,16 @@ Exposes core OS abstractions:
 from kernel.file_engine import FileEngine
 from kernel.pcb import ProcessState, TaskPCB
 from kernel.process_manager import ProcessManager, ProcessSecurityError
+from kernel.scheduler import SchedulingPolicy, TaskScheduler
+from kernel.sync import (
+    CriticalSection,
+    PCBTable,
+    ProducerConsumerQueue,
+    QueueEmptyError,
+    QueueFullError,
+    QueueShutdownError,
+    SyncError,
+)
 from kernel.syscalls import (
     DEFAULT_SYSCALL_RINGS,
     PrivilegeRing,
@@ -32,4 +42,14 @@ __all__ = [
     "ProcessManager",
     "ProcessSecurityError",
     "FileEngine",
+    "SchedulingPolicy",
+    "TaskScheduler",
+    "PCBTable",
+    "ProducerConsumerQueue",
+    "CriticalSection",
+    "SyncError",
+    "QueueFullError",
+    "QueueEmptyError",
+    "QueueShutdownError",
 ]
+

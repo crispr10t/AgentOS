@@ -79,7 +79,7 @@ class TaskPCB(BaseModel):
         now = time.time()
         if new_state == ProcessState.RUNNING and self.started_at is None:
             self.started_at = now
-        elif new_state == ProcessState.TERMINATED:
+        elif new_state == ProcessState.TERMINATED and self.ended_at is None:
             self.ended_at = now
 
         self.state = new_state
