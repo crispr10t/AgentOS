@@ -639,6 +639,17 @@ class MainWindow(QMainWindow):
         self.status_bar.showMessage(f"Status: {message}")
         self._worker = None
 
+    def close(self) -> bool:
+        """Clean teardown ensuring threads stop even if window was not shown."""
+        if hasattr(self, "telemetry_worker") and self.telemetry_worker is not None:
+            self.telemetry_worker.stop()
+        if hasattr(self, "_telemetry_daemon") and self._telemetry_daemon.is_running:
+            self._telemetry_daemon.stop()
+        if self._worker is not None and self._worker.isRunning():
+            self._worker.cancel()
+            self._worker.wait(1500)
+        return super().close()
+
     def closeEvent(self, event: Any) -> None:
         """Clean teardown on application exit."""
         if hasattr(self, "telemetry_worker") and self.telemetry_worker is not None:

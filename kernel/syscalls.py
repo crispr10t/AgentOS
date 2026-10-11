@@ -107,6 +107,7 @@ class SyscallResult(BaseModel):
         request: SyscallRequest,
         error: str,
         output: Optional[str] = None,
+        data: Optional[Any] = None,
         exit_code: int = 1,
         duration_sec: float = 0.0,
     ) -> SyscallResult:
@@ -116,6 +117,7 @@ class SyscallResult(BaseModel):
             syscall=request.syscall,
             success=False,
             output=output,
+            data=data,
             error=error,
             exit_code=exit_code,
             duration_sec=max(0.0, float(duration_sec)),

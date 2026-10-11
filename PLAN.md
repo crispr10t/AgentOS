@@ -254,7 +254,7 @@ AgentOS/
 
 ---
 
-### Phase 7: Testing, Benchmarking & Viva Defense (Week 7)
+### Phase 7: Testing, Benchmarking & Viva Defense (Week 7) — **Completed**
 
 **Objective:** Write automated tests, benchmark scheduling policies, and prepare presentation artifacts.
 
@@ -263,14 +263,17 @@ AgentOS/
    - `test_scheduler.py`: Verify that tasks are dispatched in correct order under FCFS, Priority, and SJF.
    - `test_sandbox.py`: Verify that `../` path traversal attempts raise `PermissionError`.
    - `test_syscalls.py`: Verify that infinite-loop processes are terminated at timeout.
+   - `test_phase7_verification.py`: Dedicated verification suite covering all 6 Viva Defense demo invariants and scheduling mathematical properties.
 
-2. **Scheduler Benchmarking Script:**
-   - Execute a batch of 5 synthetic tasks under FCFS vs. SJF.
-   - Generate a comparison table showing average Turnaround Time and Waiting Time.
+2. **Scheduler Benchmarking Script (`benchmark_scheduler.py`):**
+   - Execute a batch of 5 synthetic tasks under FCFS vs. Priority vs. SJF.
+   - Supports ASCII table, GitHub-flavored Markdown, and JSON export.
+   - Quantifies the Convoy Effect ratio and SJF waiting time latency reduction.
 
 3. **Academic Deliverables:**
-   - Compile the Project Report.
-   - Prepare a 5-minute live demonstration script.
+   - Compiled comprehensive academic project report: [`PROJECT_REPORT.md`](PROJECT_REPORT.md).
+   - Prepared 5-minute live demonstration playbook & Viva Q&A bank: [`VIVA_DEMO_GUIDE.md`](VIVA_DEMO_GUIDE.md).
+   - Created reproducible demonstration assets: `demo_assets/infinite_loop.py`, `demo_assets/HelloWorld.java`, `demo_assets/sample_worker.py`.
 
 ---
 
@@ -326,18 +329,24 @@ Use this outline when writing your final college project report:
 
 Before your final evaluation, ensure the following test cases are ready to demonstrate live:
 
-- [ ] **Demo 1: Live Compilation with PCB Tracking**
+- [x] **Demo 1: Live Compilation with PCB Tracking**
   - Prompt: *"Compile and run `Main.java` with a 5-second timeout."*
   - Show the examiner the live PCB entry transitioning from `NEW` $\rightarrow$ `RUNNING` $\rightarrow$ `TERMINATED`.
-- [ ] **Demo 2: Process Watchdog Catching an Infinite Loop**
-  - Spawn a script containing `while True: pass`.
+  - Automated verification: `tests/test_phase7_verification.py::test_viva_demo1_execution_lifecycle_with_pcb_tracking`.
+- [x] **Demo 2: Process Watchdog Catching an Infinite Loop**
+  - Spawn a script containing `while True: pass` (`demo_assets/infinite_loop.py`).
   - Show the watchdog terminating the process tree after the timeout expires, reporting `TIMEOUT_EXPIRED`.
-- [ ] **Demo 3: Ring 0 Privilege Elevation Prompt**
+  - Automated verification: `tests/test_phase7_verification.py::test_viva_demo2_watchdog_infinite_loop_timeout`.
+- [x] **Demo 3: Ring 0 Privilege Elevation Prompt**
   - Prompt: *"Delete the temporary files in the test directory."*
   - Show the modal dialog intercepting the action and requesting user confirmation before proceeding.
-- [ ] **Demo 4: File Undo Recovery**
+  - Automated verification: `tests/test_phase7_verification.py::test_viva_demo3_ring0_elevation_gate_security`.
+- [x] **Demo 4: File Undo Recovery**
   - Delete a test file, then click **"Undo Last Action"** to immediately restore the file from `.agentos_trash`.
-- [ ] **Demo 5: Scheduling Policy Comparison**
+  - Automated verification: `tests/test_phase7_verification.py::test_viva_demo4_file_quarantine_and_undo_recovery`.
+- [x] **Demo 5: Scheduling Policy Comparison**
   - Submit multiple tasks and switch policies between FCFS and SJF, showing the difference in completion order and calculated turnaround metrics.
-- [ ] **Demo 6: Offline Operation via Ollama**
+  - Automated verification: `tests/test_phase7_verification.py::test_viva_demo5_dynamic_scheduler_policy_switch` & `benchmark_scheduler.py`.
+- [x] **Demo 6: Offline Operation via Ollama**
   - Disconnect Wi-Fi and execute a task using local `llama3.2:3b` to prove offline reliability.
+  - Automated verification: `tests/test_phase7_verification.py::test_viva_demo6_offline_resilience`.
