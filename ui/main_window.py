@@ -60,6 +60,38 @@ class ElevationBridge(QObject):
         self.event = threading.Event()
 
 
+class TelemetryWorker(QThread):
+    """Background hardware telemetry worker thread polling psutil and emitting Qt signals."""
+
+    sig_telemetry_tick = pyqtSignal(dict)
+
+    def __init__(
+        self,
+        daemon: Optional[TelemetryDaemon] = None,
+        interval_sec: float = 1.0,
+        parent: Optional[QObject] = None,
+    ):
+        super().__init__(parent)
+        self.daemon = daemon or TelemetryDaemon(interval_sec=interval_sec)
+        self._stop_requested = threading.Event()
+
+    def run(self) -> None:
+        """Continuously samples hardware telemetry at periodic intervals on background thread."""
+        while not self._stop_requested.is_set():
+            try:
+                metrics = self.daemon.sample()
+                self.sig_telemetry_tick.emit(metrics)
+            except Exception:
+                pass
+            self._stop_requested.wait(timeout=self.daemon.interval_sec)
+
+    def stop(self, timeout_ms: int = 1500) -> None:
+        """Requests thread stop and waits for exit."""
+        self._stop_requested.set()
+        if self.isRunning():
+            self.wait(timeout_ms)
+
+
 class SupervisorWorker(QThread):
     """Dedicated background worker executing Agent planning and Kernel dispatching."""
 
@@ -262,13 +294,14 @@ class MainWindow(QMainWindow):
 
         self._worker: Optional[SupervisorWorker] = None
         self._telemetry_daemon = TelemetryDaemon(interval_sec=1.0)
+        self.telemetry_worker: Optional[TelemetryWorker] = None
 
         self.setWindowTitle("AgentOS - Cognitive User-Space Micro-Supervisor")
         self.resize(1180, 760)
         self.setMinimumSize(850, 560)
 
         self._init_ui()
-        self._init_telemetry_timer()
+        self._init_telemetry_pipeline()
 
     def _init_ui(self) -> None:
         """Constructs layout, widgets, and connections."""
@@ -440,6 +473,38 @@ class MainWindow(QMainWindow):
         self.stop_btn.clicked.connect(self.on_stop_clicked)
         prompt_row.addWidget(self.stop_btn)
 
+        self.undo_btn = QPushButton("↺ Undo")
+        self.undo_btn.setToolTip("Roll back the last sandboxed file modification or quarantined file deletion (Ctrl+Z)")
+        self.undo_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.undo_btn.setStyleSheet(
+            """
+            QPushButton {
+                background-color: #d97706;
+                color: #ffffff;
+                border: none;
+                border-radius: 6px;
+                padding: 8px 16px;
+                font-weight: bold;
+                font-size: 12px;
+            }
+            QPushButton:hover {
+                background-color: #f59e0b;
+            }
+            QPushButton:pressed {
+                background-color: #b45309;
+            }
+            QPushButton:disabled {
+                background-color: #27272a;
+                color: #71717a;
+            }
+            """
+        )
+        self.undo_btn.clicked.connect(self.on_undo_clicked)
+        prompt_row.addWidget(self.undo_btn)
+
+        self.undo_shortcut = QShortcut(QKeySequence.StandardKey.Undo, self)
+        self.undo_shortcut.activated.connect(self.on_undo_clicked)
+
         top_layout.addLayout(prompt_row)
         main_layout.addWidget(top_frame)
 
@@ -472,20 +537,45 @@ class MainWindow(QMainWindow):
         self.terminal.append_line("Kernel status: Online | Privilege Ring Gating: Active", "system")
         self.terminal.append_line("Type an instruction above or select a scheduling policy.\n", "stdout")
 
-    def _init_telemetry_timer(self) -> None:
-        """Starts 1 Hz timer to sample psutil metrics and update telemetry widget."""
+    def _init_telemetry_pipeline(self) -> None:
+        """Starts background TelemetryWorker and connects its Qt signal to TelemetryWidget."""
+        self.telemetry_worker = TelemetryWorker(
+            daemon=self._telemetry_daemon,
+            interval_sec=1.0,
+            parent=self,
+        )
+        self.telemetry_worker.sig_telemetry_tick.connect(self._on_telemetry_tick)
+        self.telemetry_worker.start()
+
+        # Backward compatibility for any external timer checks
         self._telemetry_timer = QTimer(self)
-        self._telemetry_timer.setInterval(1000)
-        self._telemetry_timer.timeout.connect(self._on_telemetry_tick)
-        self._telemetry_timer.start()
 
-        # Initial sample
-        self._on_telemetry_tick()
+        # Initial sample to immediately populate gauges
+        self._on_telemetry_tick(self._telemetry_daemon.get_last_sample())
 
-    def _on_telemetry_tick(self) -> None:
-        """Samples hardware telemetry and pushes to widget."""
-        metrics = self._telemetry_daemon.sample()
+    def _init_telemetry_timer(self) -> None:
+        """Legacy alias redirecting to _init_telemetry_pipeline."""
+        self._init_telemetry_pipeline()
+
+    def _on_telemetry_tick(self, data: Optional[dict[str, Any]] = None) -> None:
+        """Samples hardware telemetry or consumes background packet to update widget."""
+        metrics = data if data is not None else self._telemetry_daemon.sample()
         self.telemetry_widget.update_telemetry(metrics)
+
+    def on_undo_clicked(self) -> None:
+        """Executes undo rollback on the most recent journaled file transaction."""
+        self.undo_btn.setEnabled(False)
+        try:
+            res: SyscallResult = self.dispatcher.undo_last_action()
+            if res.success:
+                self.terminal.append_line(f"\n[UNDO] {res.output}", "audit")
+                self.status_bar.showMessage(f"Undo succeeded: {res.output}")
+            else:
+                self.terminal.append_line(f"\n[UNDO] {res.error}", "warning")
+                self.status_bar.showMessage(f"Undo: {res.error}")
+        finally:
+            if self._worker is None or not self._worker.isRunning():
+                self.undo_btn.setEnabled(True)
 
     def on_execute_clicked(self) -> None:
         """Handles Execution trigger from button or Return key."""
@@ -502,6 +592,7 @@ class MainWindow(QMainWindow):
         # Update UI state
         self.execute_btn.setEnabled(False)
         self.stop_btn.setEnabled(True)
+        self.undo_btn.setEnabled(False)
         self.prompt_input.setEnabled(False)
         self.policy_combo.setEnabled(False)
         self.status_bar.showMessage("Initializing supervisor worker...")
@@ -542,6 +633,7 @@ class MainWindow(QMainWindow):
         """Restores UI controls when worker completes."""
         self.execute_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
+        self.undo_btn.setEnabled(True)
         self.prompt_input.setEnabled(True)
         self.policy_combo.setEnabled(True)
         self.status_bar.showMessage(f"Status: {message}")
@@ -549,7 +641,9 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event: Any) -> None:
         """Clean teardown on application exit."""
-        if self._telemetry_timer.isActive():
+        if hasattr(self, "telemetry_worker") and self.telemetry_worker is not None:
+            self.telemetry_worker.stop()
+        if hasattr(self, "_telemetry_timer") and self._telemetry_timer.isActive():
             self._telemetry_timer.stop()
         if self._telemetry_daemon.is_running:
             self._telemetry_daemon.stop()

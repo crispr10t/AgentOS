@@ -32,16 +32,31 @@ class FileEngine:
         self,
         sandbox_root: Optional[Path | str] = None,
         trash_dir_name: str = ".agentos_trash",
+        journal: Optional[Any] = None,
+        db_manager: Optional[Any] = None,
     ):
         """Initializes the FileEngine.
 
         Args:
             sandbox_root: Optional sandbox root path. If None, reads SANDBOX_ROOT env.
             trash_dir_name: Subdirectory name for quarantined files.
+            journal: Optional TransactionJournal instance for write-ahead logging and undo.
+            db_manager: Optional DatabaseManager instance to bind transaction logging to.
         """
         self.sandbox_root = ensure_sandbox_root(sandbox_root)
         self.trash_dir = self.sandbox_root / trash_dir_name
         self.trash_dir.mkdir(parents=True, exist_ok=True)
+
+        if journal is None:
+            from storage.journal import TransactionJournal
+
+            self.journal = TransactionJournal(
+                db_manager=db_manager,
+                sandbox_root=self.sandbox_root,
+                trash_dir_name=trash_dir_name,
+            )
+        else:
+            self.journal = journal
 
     def file_search(
         self,
@@ -237,10 +252,31 @@ class FileEngine:
 
         try:
             safe_path.parent.mkdir(parents=True, exist_ok=True)
+            is_new = not safe_path.exists()
+            previous_content: Optional[str] = None
+            if not is_new and safe_path.is_file():
+                try:
+                    with open(safe_path, "r", encoding=encoding, errors="replace") as f_prev:
+                        previous_content = f_prev.read()
+                except Exception:
+                    pass
+
             with open(safe_path, mode, encoding=encoding) as f:
                 bytes_written = f.write(content)
 
             rel_path = str(safe_path.relative_to(self.sandbox_root)).replace("\\", "/")
+
+            if self.journal is not None:
+                try:
+                    self.journal.record_write(
+                        file_path=rel_path,
+                        previous_content=previous_content,
+                        is_new=is_new,
+                        details={"bytes_written": bytes_written, "mode": mode},
+                    )
+                except Exception:
+                    pass
+
             return SyscallResult.ok(
                 request=req,
                 output=f"Wrote {bytes_written} characters to '{rel_path}'.",
@@ -307,6 +343,16 @@ class FileEngine:
 
             rel_src = str(safe_src.relative_to(self.sandbox_root)).replace("\\", "/")
             rel_dest = str(safe_dest.relative_to(self.sandbox_root)).replace("\\", "/")
+
+            if self.journal is not None:
+                try:
+                    self.journal.record_move(
+                        src_path=rel_src,
+                        dest_path=rel_dest,
+                    )
+                except Exception:
+                    pass
+
             return SyscallResult.ok(
                 request=req,
                 output=f"Moved '{rel_src}' -> '{rel_dest}'.",
@@ -383,6 +429,17 @@ class FileEngine:
                 }
                 with open(meta_file, "w", encoding="utf-8") as mf:
                     json.dump(meta_data, mf, indent=2)
+
+                if self.journal is not None:
+                    try:
+                        self.journal.record_quarantine(
+                            original_path=rel_path,
+                            quarantined_target=trash_target_name,
+                            is_directory=is_directory,
+                            details=meta_data,
+                        )
+                    except Exception:
+                        pass
 
                 return SyscallResult.ok(
                     request=req,
@@ -469,3 +526,26 @@ class FileEngine:
                 exit_code=1,
                 duration_sec=time.time() - start_time,
             )
+
+    def undo_last_action(self) -> Any:
+        """Rolls back the most recent un-reverted transaction in the journal.
+
+        Returns:
+            UndoResult from the transaction journal.
+        """
+        if self.journal is None:
+            from storage.journal import UndoResult
+
+            return UndoResult(
+                success=False,
+                message="No transaction journal configured.",
+                entry=None,
+            )
+        return self.journal.undo_last(sandbox_root=self.sandbox_root)
+
+    def get_journal_history(self, limit: int = 50) -> list[Any]:
+        """Retrieves recent transaction journal entries."""
+        if self.journal is None:
+            return []
+        return self.journal.get_history(limit=limit)
+

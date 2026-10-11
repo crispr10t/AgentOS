@@ -96,9 +96,23 @@ class DatabaseManager:
                         error TEXT
                     );
 
+                    CREATE TABLE IF NOT EXISTS file_journal (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        timestamp REAL NOT NULL,
+                        action_type TEXT NOT NULL,
+                        original_path TEXT NOT NULL,
+                        target_path TEXT,
+                        backup_data TEXT,
+                        is_directory INTEGER NOT NULL DEFAULT 0,
+                        undone INTEGER NOT NULL DEFAULT 0,
+                        details_json TEXT
+                    );
+
                     CREATE INDEX IF NOT EXISTS idx_tasks_state ON tasks(state);
                     CREATE INDEX IF NOT EXISTS idx_audit_syscall ON syscall_audit_log(syscall);
                     CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON syscall_audit_log(timestamp);
+                    CREATE INDEX IF NOT EXISTS idx_journal_undone ON file_journal(undone);
+                    CREATE INDEX IF NOT EXISTS idx_journal_timestamp ON file_journal(timestamp);
                     """
                 )
         finally:

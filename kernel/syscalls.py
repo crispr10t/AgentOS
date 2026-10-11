@@ -7,6 +7,7 @@ and the Micro-Supervisor Kernel.
 from __future__ import annotations
 
 from enum import Enum, IntEnum
+import time
 from typing import Any, Optional
 import uuid
 
@@ -154,14 +155,29 @@ class SyscallDispatcher:
         else:
             self.process_manager = process_manager
 
+        if db_manager is None:
+            from storage.db import DatabaseManager
+
+            self.db_manager = DatabaseManager()
+        else:
+            self.db_manager = db_manager
+
         if file_engine is None:
             from kernel.file_engine import FileEngine
+            from storage.journal import TransactionJournal
 
-            self.file_engine = FileEngine()
+            journal = TransactionJournal(db_manager=self.db_manager)
+            self.file_engine = FileEngine(journal=journal, db_manager=self.db_manager)
         else:
             self.file_engine = file_engine
-
-        self.db_manager = db_manager
+            if (
+                hasattr(self.file_engine, "journal")
+                and self.file_engine.journal is not None
+                and db_manager is not None
+                and self.file_engine.journal.db_manager != self.db_manager
+            ):
+                self.file_engine.journal.db_manager = self.db_manager
+                self.file_engine.journal._ensure_journal_schema()
 
     def dispatch(
         self,
@@ -353,4 +369,48 @@ class SyscallDispatcher:
                 result=result,
                 pid=pcb.pid if pcb is not None else None,
             )
+
+    def undo_last_action(self) -> SyscallResult:
+        """Rolls back the most recent un-reverted sandboxed file modification.
+
+        Returns:
+            SyscallResult containing status, output, and transaction details.
+        """
+        start_time = time.time()
+        undo_req = SyscallRequest(
+            syscall=SyscallType.FILE_DELETE,
+            params={"action": "UNDO_LAST"},
+            ring=PrivilegeRing.RING_0,
+        )
+        if self.file_engine is None:
+            return SyscallResult.fail(
+                request=undo_req,
+                error="FileEngine not initialized in dispatcher.",
+                duration_sec=0.0,
+            )
+
+        res = self.file_engine.undo_last_action()
+        duration = time.time() - start_time
+
+        if res.success:
+            entry_data = res.entry.model_dump() if res.entry else None
+            result = SyscallResult.ok(
+                request=undo_req,
+                output=res.message,
+                data=entry_data,
+                duration_sec=duration,
+            )
+        else:
+            entry_data = res.entry.model_dump() if res.entry else None
+            result = SyscallResult.fail(
+                request=undo_req,
+                error=res.message,
+                data=entry_data,
+                duration_sec=duration,
+            )
+
+        if self.db_manager is not None:
+            self.db_manager.log_syscall(request=undo_req, result=result)
+
+        return result
 
