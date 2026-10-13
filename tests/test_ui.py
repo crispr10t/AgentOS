@@ -267,11 +267,44 @@ def test_main_window_initialization(qapp):
     assert window.windowTitle().startswith("AgentOS")
     assert window.prompt_input is not None
     assert window.execute_btn.isEnabled()
+    assert not window.execute_btn.isHidden()
     assert not window.stop_btn.isEnabled()
+    assert window.stop_btn.isHidden()
+    assert window.undo_btn.isHidden()
     assert window.policy_combo.currentText() == "FCFS"
     assert window.pcb_table is not None
     assert window.terminal is not None
     assert window.telemetry_widget is not None
+
+    window.close()
+
+
+def test_main_window_dynamic_button_visibility(qapp):
+    """Verifies that Stop and Execute buttons swap visibility during execution lifecycle."""
+    planner = DummyPlanner()
+    dispatcher = SyscallDispatcher()
+    window = MainWindow(planner=planner, dispatcher=dispatcher)
+
+    # Initial state: only Execute is visible, Stop & Undo are hidden
+    assert not window.execute_btn.isHidden()
+    assert window.stop_btn.isHidden()
+    assert window.undo_btn.isHidden()
+
+    window.prompt_input.setText("Inspect system info")
+    window.on_execute_clicked()
+
+    # While running: Stop is shown, Execute & Undo are hidden
+    assert window.execute_btn.isHidden()
+    assert not window.stop_btn.isHidden()
+    assert window.undo_btn.isHidden()
+
+    if window._worker is not None:
+        window._worker.wait(3000)
+    qapp.processEvents()
+
+    # Finished state: Execute is restored, Stop is hidden
+    assert not window.execute_btn.isHidden()
+    assert window.stop_btn.isHidden()
 
     window.close()
 

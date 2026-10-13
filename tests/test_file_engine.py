@@ -123,3 +123,22 @@ def test_get_sys_info(file_engine: FileEngine):
     assert "cpu_count_logical" in info_res.data
     assert "memory_total_mb" in info_res.data
     assert "sandbox_root" in info_res.data
+
+
+def test_file_search_fuzzy_typo_directory(file_engine: FileEngine):
+    """Verify fuzzy resolution of directory names with slight typos (e.g. demo_assests -> demo_assets)."""
+    file_engine.file_write("demo_assets/worker.py", "print('worker')")
+    file_engine.file_write("demo_assets/notes.txt", "notes")
+
+    # Pass typo "demo_assests"
+    res = file_engine.file_search(pattern="*.py", relative_to="demo_assests")
+    assert res.success is True
+    assert any("worker.py" in match for match in res.data)
+
+
+def test_file_search_nonexistent_directory_graceful(file_engine: FileEngine):
+    """Verify non-existent directory returns non-crashing informative result."""
+    res = file_engine.file_search(pattern="*", relative_to="completely_nonexistent_folder")
+    assert res.success is True
+    assert res.data == []
+    assert "No directory named" in (res.output or "")

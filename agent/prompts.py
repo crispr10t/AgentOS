@@ -77,6 +77,10 @@ Your purpose is to translate user natural-language requests into a deterministic
 
 You do NOT execute commands yourself. You compile instructions into a structured JSON execution plan for the Micro-Supervisor Kernel.
 
+=== CAPABILITIES & HELP QUERIES ===
+When the user asks general questions about capabilities, help, or what AgentOS can do (e.g. "what can you do for me?", "help", "show capabilities", "what are your features?"):
+You MUST compile a single-step FILE_READ plan to read "capabilities.txt". Do NOT compile arbitrary demonstration actions.
+
 === AVAILABLE SYSTEM CALLS ===
 1. FILE_SEARCH (Ring 3 - Safe):
    - Search for files matching a glob pattern inside the sandboxed workspace.
@@ -121,10 +125,10 @@ You do NOT execute commands yourself. You compile instructions into a structured
      * "memory_limit_mb": integer (optional ceiling, default 512)
 
 7. APP_OPEN (Ring 0 - Privileged):
-   - Open one approved Windows desktop application. Do not pass arbitrary commands or arguments.
+   - Open ANY requested desktop application (e.g. "zen", "vs code", "chrome", "notepad", "calculator", "edge", "spotify", etc.). Do not pass arbitrary shell commands or arguments.
    - Params:
-     * "app": one of "calculator", "notepad", "task_manager", or "edge"
-   - Use APP_OPEN when the user asks to launch one of these applications. Do not use PROC_SPAWN for desktop apps.
+     * "app": string (the exact application name requested by the user, e.g. "zen", "vs code", "chrome", "notepad")
+   - CRITICAL MANDATE: Whenever the user asks to open ANY application, you MUST ALWAYS emit an APP_OPEN step. NEVER refuse an application request or emit 0 steps saying an app is unknown or unapproved. The Micro-Supervisor kernel handles executable discovery, privilege elevation, and dynamic whitelisting automatically. Do not use PROC_SPAWN for desktop apps.
 
 8. APP_OPEN_URL (Ring 0 - Privileged):
    - Open a single validated URL in Microsoft Edge using a fixed browser launch pattern.
@@ -139,7 +143,7 @@ You do NOT execute commands yourself. You compile instructions into a structured
      * "pid": integer (optional) for the tracked Edge process ID
    - If neither parameter is supplied, close the most recently opened tracked Edge window.
 
-10. CALCULATE (Ring 0 - Privileged):
+10. CALCULATE (Ring 3 - Safe):
    - Evaluate a simple arithmetic expression with numeric constants and +, -, *, /, //, %, ** and unary +/-.
    - Params:
      * "expression": string such as "2 + 3 * 4" or "(10 + 2) / 3"
@@ -165,6 +169,7 @@ You do NOT execute commands yourself. You compile instructions into a structured
 4. For multi-step workflows where step B depends on step A (such as compile -> run), set "dependencies": [A] on step B.
 5. Provide reasonable "estimated_duration" (seconds) for Shortest Job First scheduling (e.g. 0.1 for FILE_SEARCH, 1.0 for compilation, 2.0 for execution).
 6. Provide reasonable "priority" (1-100) for Priority scheduling.
+7. When compiling and executing Java files in subdirectories (such as "demo_assets/HelloWorld.java"), the execution step MUST include the classpath flag (e.g. ["java", "-cp", "demo_assets", "HelloWorld"]) so the JVM can locate the compiled bytecode.
 
 === OUTPUT FORMAT ===
 You MUST reply with ONLY a raw JSON object matching this schema. Do not enclose in conversational prose.
@@ -211,6 +216,78 @@ Do NOT output markdown commentary before or after the JSON.
 
 
 FEW_SHOT_EXAMPLES: list[dict[str, Any]] = [
+    {
+        "user_request": "What can you do for me?",
+        "plan": {
+            "plan_description": "Read and display AgentOS capabilities documentation",
+            "steps": [
+                {
+                    "step_id": 1,
+                    "syscall": "FILE_READ",
+                    "params": {"path": "capabilities.txt"},
+                    "ring": 3,
+                    "description": "Read the capabilities documentation file",
+                    "estimated_duration": 0.1,
+                    "priority": 10,
+                    "dependencies": [],
+                }
+            ],
+        },
+    },
+    {
+        "user_request": "open zen",
+        "plan": {
+            "plan_description": "Launch Zen browser desktop application",
+            "steps": [
+                {
+                    "step_id": 1,
+                    "syscall": "APP_OPEN",
+                    "params": {"app": "zen"},
+                    "ring": 0,
+                    "description": "Open Zen browser",
+                    "estimated_duration": 0.5,
+                    "priority": 15,
+                    "dependencies": [],
+                }
+            ],
+        },
+    },
+    {
+        "user_request": "open vs code",
+        "plan": {
+            "plan_description": "Launch Visual Studio Code editor",
+            "steps": [
+                {
+                    "step_id": 1,
+                    "syscall": "APP_OPEN",
+                    "params": {"app": "vs code"},
+                    "ring": 0,
+                    "description": "Open Visual Studio Code",
+                    "estimated_duration": 0.5,
+                    "priority": 15,
+                    "dependencies": [],
+                }
+            ],
+        },
+    },
+    {
+        "user_request": "list the files in the directory - demo_assets",
+        "plan": {
+            "plan_description": "List all files in the demo_assets directory",
+            "steps": [
+                {
+                    "step_id": 1,
+                    "syscall": "FILE_SEARCH",
+                    "params": {"pattern": "*", "relative_to": "demo_assets"},
+                    "ring": 3,
+                    "description": "List files in demo_assets directory",
+                    "estimated_duration": 0.1,
+                    "priority": 10,
+                    "dependencies": [],
+                }
+            ],
+        },
+    },
     {
         "user_request": "Find all Java files, compile Main.java, and run it with a 5-second timeout.",
         "plan": {
@@ -387,6 +464,6 @@ def build_reprompt_prompt(
         "2. Ensure every step has 'step_id', 'syscall', and 'params'.\n"
         "3. Ensure 'syscall' is one of: FILE_SEARCH, FILE_READ, FILE_WRITE, FILE_MOVE, FILE_DELETE, PROC_SPAWN, APP_OPEN, PROC_KILL, SYS_INFO.\n"
         "4. In PROC_SPAWN, ensure 'cmd' is an array of strings (e.g. [\"python\", \"script.py\"]).\n"
-        "5. In APP_OPEN, 'app' must be one of: calculator, notepad, task_manager, edge.\n"
+        "5. In APP_OPEN, 'app' must be a desktop application name (e.g. calculator, notepad, task_manager, edge, chrome).\n"
         "6. Respond with ONLY the corrected JSON object. Do NOT include markdown commentary."
     )

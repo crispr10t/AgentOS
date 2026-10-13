@@ -7,6 +7,7 @@ and the Micro-Supervisor Kernel.
 from __future__ import annotations
 
 from enum import Enum, IntEnum
+from pathlib import Path
 import time
 from typing import Any, Optional
 import uuid
@@ -45,7 +46,7 @@ DEFAULT_SYSCALL_RINGS: dict[SyscallType, PrivilegeRing] = {
     SyscallType.APP_OPEN: PrivilegeRing.RING_0,
     SyscallType.APP_OPEN_URL: PrivilegeRing.RING_0,
     SyscallType.APP_CLOSE_TAB: PrivilegeRing.RING_0,
-    SyscallType.CALCULATE: PrivilegeRing.RING_0,
+    SyscallType.CALCULATE: PrivilegeRing.RING_3,
     SyscallType.FILE_SEARCH: PrivilegeRing.RING_3,
     SyscallType.FILE_READ: PrivilegeRing.RING_3,
     SyscallType.FILE_WRITE: PrivilegeRing.RING_0,
@@ -285,11 +286,34 @@ class SyscallDispatcher:
                         exit_code=1,
                     )
                 else:
+                    exec_cwd = params.get("cwd")
+                    if exec_cwd is None:
+                        # Determine working directory: prefer sandbox_root if target script is in sandbox
+                        target_script = ""
+                        if isinstance(cmd, list) and len(cmd) > 1 and not str(cmd[1]).startswith("-"):
+                            target_script = str(cmd[1])
+                        elif isinstance(cmd, list) and len(cmd) > 0 and not str(cmd[0]).startswith("-"):
+                            target_script = str(cmd[0])
+                        elif isinstance(cmd, str):
+                            tokens_tmp = cmd.split()
+                            if len(tokens_tmp) > 1 and not tokens_tmp[1].startswith("-"):
+                                target_script = tokens_tmp[1]
+                            elif len(tokens_tmp) > 0 and not tokens_tmp[0].startswith("-"):
+                                target_script = tokens_tmp[0]
+
+                        s_root = getattr(self.file_engine, "sandbox_root", None)
+                        if target_script and s_root and (Path(s_root) / target_script).exists():
+                            exec_cwd = s_root
+                        elif target_script and Path(target_script).exists():
+                            exec_cwd = None
+                        elif s_root:
+                            exec_cwd = s_root
+
                     result = self.process_manager.spawn(
                         cmd=cmd,
                         timeout_sec=params.get("timeout") or params.get("timeout_sec"),
                         memory_limit_mb=params.get("memory_limit_mb"),
-                        cwd=params.get("cwd"),
+                        cwd=exec_cwd,
                         env=params.get("env"),
                         stdin_data=params.get("stdin_data"),
                         request=request,

@@ -58,7 +58,7 @@ def main() -> None:
     # Initialize QApplication
     app = QApplication(sys.argv)
     app.setApplicationName("AgentOS")
-    app.setApplicationDisplayName("AgentOS - Cognitive Micro-Supervisor")
+    app.setApplicationDisplayName("AgentOS")
     app.setOrganizationName("AgentOS")
     app.setApplicationVersion("0.5.0")
 

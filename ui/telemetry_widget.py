@@ -40,25 +40,25 @@ class TelemetryWidget(QWidget):
     def _init_ui(self) -> None:
         """Configures bar layout, progress meters, and per-core container."""
         main_layout = QHBoxLayout(self)
-        main_layout.setContentsMargins(10, 6, 10, 6)
-        main_layout.setSpacing(16)
+        main_layout.setContentsMargins(12, 5, 12, 5)
+        main_layout.setSpacing(14)
 
         self.setStyleSheet(
             """
             TelemetryWidget {
-                background-color: #121216;
-                border-top: 1px solid #27272a;
+                background-color: #0b0c10;
+                border-top: 1px solid #1a1d26;
             }
             """
         )
 
         # 1. Total CPU Gauge
         cpu_box = QHBoxLayout()
-        cpu_box.setSpacing(8)
+        cpu_box.setSpacing(6)
 
         self.cpu_label = QLabel("CPU: 0.0%")
         self.cpu_label.setStyleSheet(
-            "font-size: 11px; font-weight: bold; color: #f4f4f5; min-width: 68px;"
+            "font-size: 11px; font-weight: 500; color: #94a3b8; min-width: 65px;"
         )
         cpu_box.addWidget(self.cpu_label)
 
@@ -66,8 +66,8 @@ class TelemetryWidget(QWidget):
         self.cpu_bar.setRange(0, 100)
         self.cpu_bar.setValue(0)
         self.cpu_bar.setTextVisible(False)
-        self.cpu_bar.setFixedWidth(100)
-        self.cpu_bar.setFixedHeight(12)
+        self.cpu_bar.setFixedWidth(80)
+        self.cpu_bar.setFixedHeight(6)
         self.cpu_bar.setStyleSheet(self._progress_bar_qss("#10b981"))
         cpu_box.addWidget(self.cpu_bar)
 
@@ -75,22 +75,22 @@ class TelemetryWidget(QWidget):
 
         # 2. Per-Core CPU Mini Meters
         cores_box = QHBoxLayout()
-        cores_box.setSpacing(6)
+        cores_box.setSpacing(5)
 
         cores_title = QLabel("Cores:")
-        cores_title.setStyleSheet("font-size: 11px; color: #a1a1aa;")
+        cores_title.setStyleSheet("font-size: 11px; color: #64748b; font-weight: 500;")
         cores_box.addWidget(cores_title)
 
         self.cores_container = QWidget()
         self.cores_layout = QHBoxLayout(self.cores_container)
         self.cores_layout.setContentsMargins(0, 0, 0, 0)
-        self.cores_layout.setSpacing(3)
+        self.cores_layout.setSpacing(2)
 
         cores_scroll = QScrollArea()
         cores_scroll.setWidgetResizable(True)
         cores_scroll.setWidget(self.cores_container)
-        cores_scroll.setFixedHeight(24)
-        cores_scroll.setMaximumWidth(280)
+        cores_scroll.setFixedHeight(18)
+        cores_scroll.setMaximumWidth(220)
         cores_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         cores_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         cores_scroll.setStyleSheet(
@@ -104,11 +104,11 @@ class TelemetryWidget(QWidget):
 
         # 3. RAM Gauge
         ram_box = QHBoxLayout()
-        ram_box.setSpacing(8)
+        ram_box.setSpacing(6)
 
         self.ram_label = QLabel("RAM: 0.0% (0.0 / 0.0 GB)")
         self.ram_label.setStyleSheet(
-            "font-size: 11px; font-weight: bold; color: #f4f4f5; min-width: 150px;"
+            "font-size: 11px; font-weight: 500; color: #94a3b8; min-width: 145px;"
         )
         ram_box.addWidget(self.ram_label)
 
@@ -116,8 +116,8 @@ class TelemetryWidget(QWidget):
         self.ram_bar.setRange(0, 100)
         self.ram_bar.setValue(0)
         self.ram_bar.setTextVisible(False)
-        self.ram_bar.setFixedWidth(100)
-        self.ram_bar.setFixedHeight(12)
+        self.ram_bar.setFixedWidth(80)
+        self.ram_bar.setFixedHeight(6)
         self.ram_bar.setStyleSheet(self._progress_bar_qss("#38bdf8"))
         ram_box.addWidget(self.ram_bar)
 
@@ -125,20 +125,22 @@ class TelemetryWidget(QWidget):
 
         # 4. Status indicator badge
         self.pulse_label = QLabel("● Live")
-        self.pulse_label.setStyleSheet("font-size: 11px; color: #10b981; font-weight: bold;")
+        self.pulse_label.setStyleSheet(
+            "font-size: 10px; color: #34d399; font-weight: 600; background-color: #06281e; border: 1px solid #064e3b; padding: 2px 7px; border-radius: 9999px;"
+        )
         main_layout.addWidget(self.pulse_label)
 
     def _progress_bar_qss(self, fill_color: str) -> str:
         """Generates stylesheet for styled rounded progress bars."""
         return f"""
         QProgressBar {{
-            background-color: #27272a;
-            border-radius: 4px;
+            background-color: #1a1d26;
+            border-radius: 3px;
             border: none;
         }}
         QProgressBar::chunk {{
             background-color: {fill_color};
-            border-radius: 4px;
+            border-radius: 3px;
         }}
         """
 
@@ -178,8 +180,8 @@ class TelemetryWidget(QWidget):
                 bar.setRange(0, 100)
                 bar.setValue(0)
                 bar.setTextVisible(False)
-                bar.setFixedWidth(8)
-                bar.setFixedHeight(18)
+                bar.setFixedWidth(4)
+                bar.setFixedHeight(12)
                 bar.setStyleSheet(self._progress_bar_qss("#10b981"))
                 bar.setToolTip(f"Core {i}")
                 self.cores_layout.addWidget(bar)

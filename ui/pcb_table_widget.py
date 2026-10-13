@@ -25,15 +25,16 @@ from kernel.pcb import ProcessState, TaskPCB
 
 
 # State Badge Color Configuration (Background, Foreground)
+# State Badge Color Configuration (Background, Foreground)
 STATE_COLORS: dict[ProcessState, tuple[str, str]] = {
-    ProcessState.NEW: ("#374151", "#d1d5db"),          # Gray
-    ProcessState.READY: ("#1e3a8a", "#93c5fd"),        # Blue
-    ProcessState.RUNNING: ("#78350f", "#fde68a"),      # Amber
-    ProcessState.WAITING: ("#4c1d95", "#c4b5fd"),      # Purple
-    ProcessState.TERMINATED: ("#064e3b", "#a7f3d0"),   # Green
+    ProcessState.NEW: ("#1e222d", "#94a3b8"),          # Subtle gray
+    ProcessState.READY: ("#172554", "#60a5fa"),        # Soft blue
+    ProcessState.RUNNING: ("#451a03", "#fbbf24"),      # Soft amber
+    ProcessState.WAITING: ("#2e1065", "#c084fc"),      # Soft purple
+    ProcessState.TERMINATED: ("#064e3b", "#34d399"),   # Soft emerald
 }
 
-TERMINATED_ERROR_COLORS = ("#7f1d1d", "#fca5a5")       # Red (non-zero exit)
+TERMINATED_ERROR_COLORS = ("#450a0a", "#f87171")       # Soft red (non-zero exit)
 
 
 class PcbTableWidget(QWidget):
@@ -61,14 +62,14 @@ class PcbTableWidget(QWidget):
         """Configures widget layout, table headers, and styling."""
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(8)
+        layout.setSpacing(6)
 
         # 1. Header Toolbar with Status Counters
         header_bar = QHBoxLayout()
-        header_bar.setContentsMargins(4, 4, 4, 4)
+        header_bar.setContentsMargins(2, 2, 2, 2)
 
-        title = QLabel("Process Control Block (PCB) Registry")
-        title.setStyleSheet("font-size: 13px; font-weight: bold; color: #f4f4f5;")
+        title = QLabel("Process Registry")
+        title.setStyleSheet("font-size: 13px; font-weight: 600; color: #f8fafc;")
         header_bar.addWidget(title)
 
         header_bar.addStretch()
@@ -76,12 +77,13 @@ class PcbTableWidget(QWidget):
         self.count_badge = QLabel("Tasks: 0 | Running: 0 | Terminated: 0")
         self.count_badge.setStyleSheet(
             """
-            background-color: #27272a;
-            color: #a1a1aa;
+            background-color: #141720;
+            color: #64748b;
             font-size: 11px;
             font-weight: 500;
-            padding: 3px 8px;
-            border-radius: 4px;
+            padding: 2px 8px;
+            border-radius: 9999px;
+            border: 1px solid #202432;
             """
         )
         header_bar.addWidget(self.count_badge)
@@ -98,43 +100,52 @@ class PcbTableWidget(QWidget):
         self.table.setShowGrid(False)
         self.table.setAlternatingRowColors(True)
 
-        # Column widths & resize modes
+        # Proportional column sizing preventing Task Name collapse
         header = self.table.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)  # PID
-        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)           # Task Name
-        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)  # State
-        header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)  # Priority
-        header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)  # Est.
-        header.setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)  # CPU Time
-        header.setSectionResizeMode(6, QHeaderView.ResizeMode.ResizeToContents)  # Peak RAM
-        header.setSectionResizeMode(7, QHeaderView.ResizeMode.ResizeToContents)  # Exit Code
+        header.setMinimumSectionSize(40)
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)  # PID
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)      # Task Name
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Interactive)  # State
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.Interactive)  # Priority
+        header.setSectionResizeMode(4, QHeaderView.ResizeMode.Interactive)  # Est.
+        header.setSectionResizeMode(5, QHeaderView.ResizeMode.Interactive)  # CPU Time
+        header.setSectionResizeMode(6, QHeaderView.ResizeMode.Interactive)  # Peak RAM
+        header.setSectionResizeMode(7, QHeaderView.ResizeMode.Interactive)  # Exit Code
+
+        self.table.setColumnWidth(0, 58)   # PID
+        self.table.setColumnWidth(2, 102)  # State
+        self.table.setColumnWidth(3, 56)   # Priority
+        self.table.setColumnWidth(4, 52)   # Est.
+        self.table.setColumnWidth(5, 60)   # CPU Time
+        self.table.setColumnWidth(6, 68)   # Peak RAM
+        self.table.setColumnWidth(7, 80)   # Exit Code
 
         self.table.setStyleSheet(
             """
             QTableWidget {
-                background-color: #18181b;
-                alternate-background-color: #202024;
-                color: #e4e4e7;
-                border: 1px solid #27272a;
-                border-radius: 6px;
+                background-color: #0f1117;
+                alternate-background-color: #141720;
+                color: #e2e8f0;
+                border: 1px solid #1e222d;
+                border-radius: 8px;
                 gridline-color: transparent;
             }
             QTableWidget::item {
-                padding: 6px 8px;
+                padding: 5px 8px;
                 border: none;
             }
             QTableWidget::item:selected {
-                background-color: #312e81;
+                background-color: #1e1b4b;
                 color: #ffffff;
             }
             QHeaderView::section {
-                background-color: #1e1e24;
-                color: #a1a1aa;
+                background-color: #141720;
+                color: #64748b;
                 padding: 6px 8px;
                 font-weight: 600;
                 font-size: 11px;
                 border: none;
-                border-bottom: 1px solid #3f3f46;
+                border-bottom: 1px solid #1e222d;
             }
             """
         )
@@ -214,22 +225,22 @@ class PcbTableWidget(QWidget):
         """Builds a styled state badge container widget for a table cell."""
         container = QWidget()
         h_layout = QHBoxLayout(container)
-        h_layout.setContentsMargins(4, 2, 4, 2)
+        h_layout.setContentsMargins(2, 2, 2, 2)
         h_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         label = QLabel(pcb.state.value)
-        label.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+        label.setFont(QFont("Segoe UI", 8, QFont.Weight.DemiBold))
 
         if pcb.state == ProcessState.TERMINATED and pcb.exit_code is not None and pcb.exit_code != 0:
             bg_color, fg_color = TERMINATED_ERROR_COLORS
         else:
-            bg_color, fg_color = STATE_COLORS.get(pcb.state, ("#374151", "#d1d5db"))
+            bg_color, fg_color = STATE_COLORS.get(pcb.state, ("#1e222d", "#94a3b8"))
 
         label.setStyleSheet(
             f"""
             background-color: {bg_color};
             color: {fg_color};
-            padding: 3px 10px;
+            padding: 2px 7px;
             border-radius: 4px;
             """
         )

@@ -146,7 +146,23 @@ class SupervisorWorker(QThread):
 
         # 1. Compile Plan
         try:
-            plan = self.planner.compile(self.prompt)
+            # Provide current sandbox workspace files and directory context to LLM Shell
+            context: dict[str, Any] = {}
+            try:
+                s_root = getattr(self.dispatcher.file_engine, "sandbox_root", None)
+                if s_root and Path(s_root).is_dir():
+                    s_path = Path(s_root)
+                    workspace_items = [
+                        str(p.relative_to(s_path)).replace("\\", "/")
+                        for p in s_path.rglob("*")
+                        if not p.name.startswith(".") and ".agentos_trash" not in str(p)
+                    ][:40]
+                    context["existing_files"] = workspace_items
+                    context["cwd"] = str(s_path)
+            except Exception:
+                pass
+
+            plan = self.planner.compile(self.prompt, context=context if context else None)
             self.sig_plan_compiled.emit(plan)
             self.sig_console_stream.emit(
                 f"[PLANNER] Plan compiled successfully: {plan.plan_description} "
@@ -214,7 +230,10 @@ class SupervisorWorker(QThread):
             req = step.to_syscall_request()
             user_confirmed = False
 
-            if req.ring == PrivilegeRing.RING_0:
+            needs_elevation = self.dispatcher.privilege_gate.requires_elevation(req)
+            user_confirmed = not needs_elevation
+
+            if needs_elevation:
                 self.sig_console_stream.emit(
                     f"[SECURITY] Requesting Ring 0 elevation for {req.syscall.value}...\n",
                     "warning",
@@ -236,6 +255,16 @@ class SupervisorWorker(QThread):
                     self.sig_console_stream.emit(
                         f"[SECURITY] Elevation granted by user.\n", "audit"
                     )
+                    # Dynamically add to whitelist so user is not prompted again
+                    if req.syscall == SyscallType.APP_OPEN:
+                        app_target = req.params.get("app", "")
+                        self.dispatcher.privilege_gate.whitelist_app(app_target)
+                        self.dispatcher.process_manager.whitelist_app(app_target)
+            elif req.ring == PrivilegeRing.RING_0:
+                self.sig_console_stream.emit(
+                    f"[SECURITY] Operation '{req.syscall.value}' authorized by existing whitelist.\n",
+                    "audit",
+                )
 
             # Dispatch Syscall
             res: SyscallResult = self.dispatcher.dispatch(
@@ -296,8 +325,8 @@ class MainWindow(QMainWindow):
         self._telemetry_daemon = TelemetryDaemon(interval_sec=1.0)
         self.telemetry_worker: Optional[TelemetryWorker] = None
 
-        self.setWindowTitle("AgentOS - Cognitive User-Space Micro-Supervisor")
-        self.resize(1180, 760)
+        self.setWindowTitle("AgentOS")
+        self.resize(1200, 750)
         self.setMinimumSize(850, 560)
 
         self._init_ui()
@@ -308,14 +337,14 @@ class MainWindow(QMainWindow):
         self.setStyleSheet(
             """
             QMainWindow {
-                background-color: #18181b;
+                background-color: #0d0f14;
             }
             QWidget {
-                color: #e4e4e7;
-                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+                color: #e2e8f0;
+                font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, Roboto, sans-serif;
             }
             QSplitter::handle {
-                background-color: #27272a;
+                background-color: #1a1d26;
                 width: 2px;
                 height: 2px;
             }
@@ -325,48 +354,49 @@ class MainWindow(QMainWindow):
         central_widget = QWidget(self)
         self.setCentralWidget(central_widget)
         main_layout = QVBoxLayout(central_widget)
-        main_layout.setContentsMargins(12, 12, 12, 6)
-        main_layout.setSpacing(10)
+        main_layout.setContentsMargins(12, 10, 12, 6)
+        main_layout.setSpacing(8)
 
         # 1. Top Header & Prompt Input Bar
         top_frame = QFrame()
+        top_frame.setObjectName("topNavFrame")
         top_frame.setStyleSheet(
             """
-            QFrame {
-                background-color: #1f1f23;
-                border: 1px solid #27272a;
-                border-radius: 8px;
-                padding: 10px;
+            #topNavFrame {
+                background-color: #141720;
+                border: 1px solid #202432;
+                border-radius: 10px;
             }
             """
         )
         top_layout = QVBoxLayout(top_frame)
-        top_layout.setContentsMargins(8, 8, 8, 8)
-        top_layout.setSpacing(10)
+        top_layout.setContentsMargins(10, 8, 10, 8)
+        top_layout.setSpacing(8)
 
         # App Title Row
         app_title_row = QHBoxLayout()
         logo_label = QLabel("⚡ <b>AgentOS</b>")
-        logo_label.setStyleSheet("font-size: 15px; color: #f4f4f5;")
+        logo_label.setStyleSheet("font-size: 14px; font-weight: 600; color: #f8fafc;")
         app_title_row.addWidget(logo_label)
 
-        version_badge = QLabel("v0.5.0 • Ring 3 / Ring 0 Supervisor")
+        version_badge = QLabel("v0.5.0")
         version_badge.setStyleSheet(
             """
-            background-color: #27272a;
-            color: #38bdf8;
+            background-color: #1c202d;
+            color: #64748b;
             font-size: 10px;
-            font-weight: bold;
-            padding: 2px 6px;
-            border-radius: 4px;
+            font-weight: 600;
+            padding: 2px 7px;
+            border-radius: 9999px;
+            border: 1px solid #262c3e;
             """
         )
         app_title_row.addWidget(version_badge)
 
         app_title_row.addStretch()
 
-        policy_label = QLabel("Scheduling Policy:")
-        policy_label.setStyleSheet("font-size: 11px; color: #a1a1aa;")
+        policy_label = QLabel("Policy:")
+        policy_label.setStyleSheet("font-size: 11px; color: #64748b; font-weight: 500;")
         app_title_row.addWidget(policy_label)
 
         self.policy_combo = QComboBox()
@@ -374,12 +404,16 @@ class MainWindow(QMainWindow):
         self.policy_combo.setStyleSheet(
             """
             QComboBox {
-                background-color: #27272a;
-                color: #f4f4f5;
-                border: 1px solid #3f3f46;
-                border-radius: 4px;
+                background-color: #1c202d;
+                color: #cbd5e1;
+                border: 1px solid #282e40;
+                border-radius: 6px;
                 padding: 3px 8px;
                 font-size: 11px;
+                font-weight: 500;
+            }
+            QComboBox:hover {
+                border-color: #3b445c;
             }
             QComboBox::drop-down {
                 border: none;
@@ -401,15 +435,16 @@ class MainWindow(QMainWindow):
         self.prompt_input.setStyleSheet(
             """
             QLineEdit {
-                background-color: #121216;
-                color: #f4f4f5;
-                border: 1px solid #3f3f46;
-                border-radius: 6px;
-                padding: 8px 12px;
+                background-color: #0a0b10;
+                color: #f8fafc;
+                border: 1px solid #232838;
+                border-radius: 8px;
+                padding: 9px 14px;
                 font-size: 13px;
             }
             QLineEdit:focus {
                 border: 1px solid #6366f1;
+                background-color: #0c0d14;
             }
             """
         )
@@ -424,9 +459,9 @@ class MainWindow(QMainWindow):
                 background-color: #4f46e5;
                 color: #ffffff;
                 border: none;
-                border-radius: 6px;
-                padding: 8px 18px;
-                font-weight: bold;
+                border-radius: 8px;
+                padding: 9px 20px;
+                font-weight: 600;
                 font-size: 12px;
             }
             QPushButton:hover {
@@ -436,8 +471,8 @@ class MainWindow(QMainWindow):
                 background-color: #4338ca;
             }
             QPushButton:disabled {
-                background-color: #27272a;
-                color: #71717a;
+                background-color: #1c202d;
+                color: #475569;
             }
             """
         )
@@ -447,55 +482,60 @@ class MainWindow(QMainWindow):
         self.stop_btn = QPushButton("Stop")
         self.stop_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.stop_btn.setEnabled(False)
+        self.stop_btn.setVisible(False)  # Hidden when idle
         self.stop_btn.setStyleSheet(
             """
             QPushButton {
-                background-color: #e11d48;
+                background-color: #dc2626;
                 color: #ffffff;
                 border: none;
-                border-radius: 6px;
-                padding: 8px 18px;
-                font-weight: bold;
+                border-radius: 8px;
+                padding: 9px 20px;
+                font-weight: 600;
                 font-size: 12px;
             }
             QPushButton:hover {
-                background-color: #f43f5e;
+                background-color: #ef4444;
             }
             QPushButton:pressed {
-                background-color: #be123c;
+                background-color: #b91c1c;
             }
             QPushButton:disabled {
-                background-color: #27272a;
-                color: #71717a;
+                background-color: #1c202d;
+                color: #475569;
             }
             """
         )
         self.stop_btn.clicked.connect(self.on_stop_clicked)
         prompt_row.addWidget(self.stop_btn)
 
-        self.undo_btn = QPushButton("↺ Undo")
-        self.undo_btn.setToolTip("Roll back the last sandboxed file modification or quarantined file deletion (Ctrl+Z)")
+        self.undo_btn = QPushButton("Undo")
+        self.undo_btn.setToolTip("Roll back the last file modification or quarantined file deletion (Ctrl+Z)")
         self.undo_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.undo_btn.setVisible(False)  # Hidden by default when no undo history exists
         self.undo_btn.setStyleSheet(
             """
             QPushButton {
-                background-color: #d97706;
-                color: #ffffff;
-                border: none;
-                border-radius: 6px;
-                padding: 8px 16px;
-                font-weight: bold;
+                background-color: #1c202d;
+                color: #cbd5e1;
+                border: 1px solid #282e40;
+                border-radius: 8px;
+                padding: 9px 14px;
+                font-weight: 500;
                 font-size: 12px;
             }
             QPushButton:hover {
-                background-color: #f59e0b;
+                background-color: #262c3e;
+                color: #f8fafc;
+                border-color: #3b445c;
             }
             QPushButton:pressed {
-                background-color: #b45309;
+                background-color: #141722;
             }
             QPushButton:disabled {
-                background-color: #27272a;
-                color: #71717a;
+                background-color: #12141c;
+                color: #475569;
+                border-color: #1c202d;
             }
             """
         )
@@ -517,7 +557,7 @@ class MainWindow(QMainWindow):
         self.terminal = TerminalWidget()
         splitter.addWidget(self.terminal)
 
-        splitter.setSizes([540, 600])
+        splitter.setSizes([600, 580])
         main_layout.addWidget(splitter, 1)
 
         # 3. Bottom Hardware Telemetry Bar
@@ -527,7 +567,7 @@ class MainWindow(QMainWindow):
         # 4. Status Bar
         self.status_bar = QStatusBar()
         self.status_bar.setStyleSheet(
-            "QStatusBar { color: #a1a1aa; font-size: 11px; background-color: #121216; }"
+            "QStatusBar { color: #64748b; font-size: 11px; background-color: #090a0f; border-top: 1px solid #1a1d26; padding: 2px 8px; }"
         )
         self.setStatusBar(self.status_bar)
         self.status_bar.showMessage("Ready. Enter an instruction to compile and execute.")
@@ -574,8 +614,15 @@ class MainWindow(QMainWindow):
                 self.terminal.append_line(f"\n[UNDO] {res.error}", "warning")
                 self.status_bar.showMessage(f"Undo: {res.error}")
         finally:
-            if self._worker is None or not self._worker.isRunning():
-                self.undo_btn.setEnabled(True)
+            has_undo = False
+            try:
+                if hasattr(self.dispatcher, "file_engine") and self.dispatcher.file_engine is not None:
+                    history = self.dispatcher.file_engine.get_journal_history(limit=5)
+                    has_undo = any(not getattr(e, "undone", False) for e in history)
+            except Exception:
+                has_undo = False
+            self.undo_btn.setVisible(has_undo)
+            self.undo_btn.setEnabled(has_undo)
 
     def on_execute_clicked(self) -> None:
         """Handles Execution trigger from button or Return key."""
@@ -589,9 +636,12 @@ class MainWindow(QMainWindow):
         policy_str = self.policy_combo.currentText()
         policy = SchedulingPolicy(policy_str)
 
-        # Update UI state
+        # Update UI state - show Stop, hide Execute & Undo
         self.execute_btn.setEnabled(False)
+        self.execute_btn.setVisible(False)
+        self.stop_btn.setVisible(True)
         self.stop_btn.setEnabled(True)
+        self.undo_btn.setVisible(False)
         self.undo_btn.setEnabled(False)
         self.prompt_input.setEnabled(False)
         self.policy_combo.setEnabled(False)
@@ -631,13 +681,25 @@ class MainWindow(QMainWindow):
 
     def _on_execution_finished(self, success: bool, message: str) -> None:
         """Restores UI controls when worker completes."""
+        self.execute_btn.setVisible(True)
         self.execute_btn.setEnabled(True)
+        self.stop_btn.setVisible(False)
         self.stop_btn.setEnabled(False)
-        self.undo_btn.setEnabled(True)
         self.prompt_input.setEnabled(True)
         self.policy_combo.setEnabled(True)
         self.status_bar.showMessage(f"Status: {message}")
         self._worker = None
+
+        # Reveal undo button only if an undoable action was recorded in journal
+        has_undo = False
+        try:
+            if hasattr(self.dispatcher, "file_engine") and self.dispatcher.file_engine is not None:
+                history = self.dispatcher.file_engine.get_journal_history(limit=5)
+                has_undo = any(not getattr(e, "undone", False) for e in history)
+        except Exception:
+            has_undo = False
+        self.undo_btn.setVisible(has_undo)
+        self.undo_btn.setEnabled(has_undo)
 
     def close(self) -> bool:
         """Clean teardown ensuring threads stop even if window was not shown."""

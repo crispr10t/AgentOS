@@ -24,23 +24,27 @@ load_dotenv()
 class LLMProvider(str, Enum):
     """Supported Large Language Model providers."""
 
-    OLLAMA = "ollama"
+    GROQ = "groq"
     GEMINI = "gemini"
     OPENAI = "openai"
+    OLLAMA = "ollama"
     MOCK = "mock"
 
 
 class LLMConfig(BaseModel):
     """Configuration options governing LLM access, endpoints, and timeouts."""
 
-    provider: LLMProvider = LLMProvider.OLLAMA
-    ollama_host: str = "http://localhost:11434"
-    ollama_model: str = "llama3.2:3b"
+    provider: LLMProvider = LLMProvider.GROQ
+    groq_api_key: Optional[str] = None
+    groq_model: str = "llama-3.3-70b-versatile"
+    groq_base_url: str = "https://api.groq.com/openai/v1"
     gemini_api_key: Optional[str] = None
     gemini_model: str = "gemini-2.5-flash"
     openai_api_key: Optional[str] = None
     openai_model: str = "gpt-4o-mini"
     openai_base_url: Optional[str] = None
+    ollama_host: str = "http://localhost:11434"
+    ollama_model: str = "llama3.2:3b"
     timeout_sec: float = 30.0
     temperature: float = 0.1
     auto_fallback: bool = True
@@ -48,21 +52,24 @@ class LLMConfig(BaseModel):
     @classmethod
     def from_env(cls) -> LLMConfig:
         """Constructs an LLMConfig from environment variables."""
-        provider_raw = os.getenv("LLM_PROVIDER", "ollama").strip().lower()
+        provider_raw = os.getenv("LLM_PROVIDER", "groq").strip().lower()
         try:
             provider = LLMProvider(provider_raw)
         except ValueError:
-            provider = LLMProvider.OLLAMA
+            provider = LLMProvider.GROQ
 
         return cls(
             provider=provider,
-            ollama_host=os.getenv("OLLAMA_HOST", "http://localhost:11434").rstrip("/"),
-            ollama_model=os.getenv("OLLAMA_MODEL", "llama3.2:3b"),
+            groq_api_key=os.getenv("GROQ_API_KEY") or None,
+            groq_model=os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"),
+            groq_base_url=os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1"),
             gemini_api_key=os.getenv("GEMINI_API_KEY") or None,
             gemini_model=os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),
             openai_api_key=os.getenv("OPENAI_API_KEY") or None,
             openai_model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
             openai_base_url=os.getenv("OPENAI_BASE_URL") or None,
+            ollama_host=os.getenv("OLLAMA_HOST", "http://localhost:11434").rstrip("/"),
+            ollama_model=os.getenv("OLLAMA_MODEL", "llama3.2:3b"),
             timeout_sec=float(os.getenv("LLM_TIMEOUT_SECONDS", "30.0")),
             temperature=float(os.getenv("LLM_TEMPERATURE", "0.1")),
             auto_fallback=os.getenv("LLM_AUTO_FALLBACK", "true").lower() in ("1", "true", "yes"),
@@ -136,34 +143,79 @@ class LLMClient:
         if provider == LLMProvider.MOCK:
             return self._call_mock(prompt, system, start_time)
 
-        # 2. Cloud Providers with Automatic Fallback
+        # 2. Groq Cloud API (Fast Llama-3.3 on Groq LPUs)
+        if provider == LLMProvider.GROQ:
+            try:
+                return self._call_groq(prompt, system, format_json, start_time)
+            except Exception as exc:
+                if self.config.auto_fallback and self.config.gemini_api_key:
+                    return self._fallback_cloud(
+                        prompt,
+                        system,
+                        format_json,
+                        start_time,
+                        failed_provider="groq",
+                        fallback_provider="gemini",
+                        fallback_call=self._call_gemini,
+                        error=exc,
+                    )
+                raise LLMClientError(f"Groq API invocation failed: {exc}") from exc
+
+        # 3. Google Gemini Cloud API
         if provider == LLMProvider.GEMINI:
             try:
                 return self._call_gemini(prompt, system, format_json, start_time)
             except Exception as exc:
-                if self.config.auto_fallback:
-                    return self._fallback_to_ollama(
-                        prompt, system, format_json, start_time, failed_provider="gemini", error=exc
+                if self.config.auto_fallback and self.config.groq_api_key:
+                    return self._fallback_cloud(
+                        prompt,
+                        system,
+                        format_json,
+                        start_time,
+                        failed_provider="gemini",
+                        fallback_provider="groq",
+                        fallback_call=self._call_groq,
+                        error=exc,
                     )
                 raise LLMClientError(f"Gemini API invocation failed: {exc}") from exc
 
+        # 4. OpenAI / Compatible Cloud API
         if provider == LLMProvider.OPENAI:
             try:
                 return self._call_openai(prompt, system, format_json, start_time)
             except Exception as exc:
                 if self.config.auto_fallback:
-                    return self._fallback_to_ollama(
-                        prompt, system, format_json, start_time, failed_provider="openai", error=exc
-                    )
+                    if self.config.groq_api_key:
+                        return self._fallback_cloud(
+                            prompt,
+                            system,
+                            format_json,
+                            start_time,
+                            failed_provider="openai",
+                            fallback_provider="groq",
+                            fallback_call=self._call_groq,
+                            error=exc,
+                        )
+                    elif self.config.gemini_api_key:
+                        return self._fallback_cloud(
+                            prompt,
+                            system,
+                            format_json,
+                            start_time,
+                            failed_provider="openai",
+                            fallback_provider="gemini",
+                            fallback_call=self._call_gemini,
+                            error=exc,
+                        )
                 raise LLMClientError(f"OpenAI API invocation failed: {exc}") from exc
 
-        # 3. Local Ollama Provider
-        try:
-            return self._call_ollama(prompt, system, format_json, start_time)
-        except Exception as exc:
+        # 5. Local Ollama Provider (Disabled/Deprecated)
+        if provider == LLMProvider.OLLAMA:
             raise LLMClientError(
-                f"Local Ollama generation failed at {self.config.ollama_host}: {exc}"
-            ) from exc
+                "Local Ollama provider is disabled. Please configure GROQ_API_KEY or GEMINI_API_KEY."
+            )
+
+        raise LLMClientError(f"Unsupported LLM provider: {provider}")
 
     def _call_mock(
         self, prompt: str, system: Optional[str], start_time: float
@@ -182,6 +234,49 @@ class LLMClient:
             provider="mock",
             model="mock-agent",
             duration_sec=duration,
+        )
+
+    def _call_groq(
+        self,
+        prompt: str,
+        system: Optional[str],
+        format_json: bool,
+        start_time: float,
+    ) -> LLMResponse:
+        """Invokes Groq Cloud API using official OpenAI-compatible endpoint."""
+        if not self.config.groq_api_key:
+            raise ValueError("GROQ_API_KEY is not configured.")
+
+        from openai import OpenAI
+
+        client = OpenAI(
+            api_key=self.config.groq_api_key,
+            base_url=self.config.groq_base_url,
+            timeout=self.config.timeout_sec,
+        )
+        messages: list[dict[str, str]] = []
+        if system:
+            messages.append({"role": "system", "content": system})
+        messages.append({"role": "user", "content": prompt})
+
+        kwargs: dict[str, Any] = {
+            "model": self.config.groq_model,
+            "messages": messages,
+            "temperature": self.config.temperature,
+        }
+        if format_json:
+            kwargs["response_format"] = {"type": "json_object"}
+
+        chat_completion = client.chat.completions.create(**kwargs)
+        content = chat_completion.choices[0].message.content or ""
+        duration = time.time() - start_time
+
+        return LLMResponse(
+            content=content,
+            provider="groq",
+            model=self.config.groq_model,
+            duration_sec=duration,
+            metadata={"usage": getattr(chat_completion, "usage", None)},
         )
 
     def _call_ollama(
@@ -335,50 +430,44 @@ class LLMClient:
             metadata={"usage": getattr(chat_completion, "usage", None)},
         )
 
-    def _fallback_to_ollama(
+    def _fallback_cloud(
         self,
         prompt: str,
         system: Optional[str],
         format_json: bool,
         start_time: float,
         failed_provider: str,
+        fallback_provider: str,
+        fallback_call: Callable[..., LLMResponse],
         error: Exception,
     ) -> LLMResponse:
-        """Gracefully routes execution to local Ollama when cloud provider fails."""
+        """Gracefully routes execution to secondary cloud provider when primary fails."""
         try:
-            resp = self._call_ollama(prompt, system, format_json, start_time)
+            resp = fallback_call(prompt, system, format_json, start_time)
             resp.fallback_occurred = True
             resp.fallback_from = failed_provider
             resp.metadata["fallback_reason"] = str(error)
             return resp
-        except Exception as ollama_err:
+        except Exception as fallback_err:
             raise LLMClientError(
                 f"Primary provider '{failed_provider}' failed ({error}) and "
-                f"fallback to Ollama also failed ({ollama_err})."
+                f"fallback to '{fallback_provider}' also failed ({fallback_err})."
             ) from error
 
     def check_connection(self) -> dict[str, Any]:
         """Probes the configured provider endpoints and reports status."""
         status: dict[str, Any] = {
             "configured_provider": self.config.provider.value,
-            "ollama_available": False,
             "cloud_key_present": False,
         }
 
-        # Probe Ollama
-        try:
-            r = requests.get(f"{self.config.ollama_host}/api/tags", timeout=2.0)
-            status["ollama_available"] = (r.status_code == 200)
-            if status["ollama_available"]:
-                models = [m.get("name") for m in r.json().get("models", [])]
-                status["ollama_models"] = models
-        except Exception:
-            status["ollama_available"] = False
-
-        # Probe cloud keys
-        if self.config.provider == LLMProvider.GEMINI:
+        if self.config.provider == LLMProvider.GROQ:
+            status["cloud_key_present"] = bool(self.config.groq_api_key)
+        elif self.config.provider == LLMProvider.GEMINI:
             status["cloud_key_present"] = bool(self.config.gemini_api_key)
         elif self.config.provider == LLMProvider.OPENAI:
             status["cloud_key_present"] = bool(self.config.openai_api_key)
+        elif self.config.provider == LLMProvider.MOCK:
+            status["cloud_key_present"] = True
 
         return status

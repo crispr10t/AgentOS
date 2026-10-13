@@ -1,4 +1,4 @@
-"""Unit and Integration Tests for Dual LLM Client."""
+"""Unit and Integration Tests for AgentOS Cloud LLM Client (Groq, Gemini, OpenAI)."""
 
 from __future__ import annotations
 
@@ -19,15 +19,29 @@ from agent.llm_client import (
 def test_llm_config_defaults():
     """Verifies default configuration properties."""
     config = LLMConfig()
-    assert config.provider == LLMProvider.OLLAMA
-    assert "11434" in config.ollama_host
-    assert config.ollama_model == "llama3.2:3b"
+    assert config.provider == LLMProvider.GROQ
+    assert config.groq_model == "llama-3.3-70b-versatile"
+    assert config.groq_base_url == "https://api.groq.com/openai/v1"
     assert config.auto_fallback is True
     assert config.timeout_sec > 0
 
 
-def test_llm_config_from_env(monkeypatch):
-    """Verifies parsing configuration from environment variables."""
+def test_llm_config_from_env_groq(monkeypatch):
+    """Verifies parsing Groq configuration from environment variables."""
+    monkeypatch.setenv("LLM_PROVIDER", "groq")
+    monkeypatch.setenv("GROQ_API_KEY", "gsk_testkey123")
+    monkeypatch.setenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+    monkeypatch.setenv("LLM_TIMEOUT_SECONDS", "25")
+
+    config = LLMConfig.from_env()
+    assert config.provider == LLMProvider.GROQ
+    assert config.groq_api_key == "gsk_testkey123"
+    assert config.groq_model == "llama-3.3-70b-versatile"
+    assert config.timeout_sec == 25.0
+
+
+def test_llm_config_from_env_openai(monkeypatch):
+    """Verifies parsing OpenAI configuration from environment variables."""
     monkeypatch.setenv("LLM_PROVIDER", "openai")
     monkeypatch.setenv("OPENAI_API_KEY", "sk-mock-key")
     monkeypatch.setenv("OPENAI_MODEL", "gpt-4o")
@@ -56,55 +70,90 @@ def test_mock_provider_generation():
     assert resp.fallback_occurred is False
 
 
-def test_ollama_provider_success():
-    """Verifies calling Ollama /api/generate via mocked HTTP response."""
-    config = LLMConfig(provider=LLMProvider.OLLAMA)
+def test_groq_provider_success():
+    """Verifies calling Groq via mocked OpenAI client."""
+    config = LLMConfig(
+        provider=LLMProvider.GROQ,
+        groq_api_key="gsk_mock_key",
+        groq_model="llama-3.3-70b-versatile",
+    )
     client = LLMClient(config=config)
 
-    mock_json = {
-        "response": '{"plan_description": "Ollama plan", "steps": []}',
-        "total_duration": 1200000000,
-        "eval_count": 42,
-    }
+    mock_chat = MagicMock()
+    mock_choice = MagicMock()
+    mock_choice.message.content = '{"plan_description": "Groq plan", "steps": []}'
+    mock_chat.choices = [mock_choice]
+    mock_chat.usage = {"total_tokens": 100}
 
-    mock_resp = MagicMock()
-    mock_resp.status_code = 200
-    mock_resp.json.return_value = mock_json
+    mock_openai_instance = MagicMock()
+    mock_openai_instance.chat.completions.create.return_value = mock_chat
 
-    with patch("requests.post", return_value=mock_resp) as mock_post:
-        resp = client.generate(prompt="Run test", system="Sys prompt", format_json=True)
-        assert resp.provider == "ollama"
-        assert "Ollama plan" in resp.content
+    with patch("openai.OpenAI", return_value=mock_openai_instance) as mock_openai_cls:
+        resp = client.generate(prompt="Compile Java code", format_json=True)
+        assert resp.provider == "groq"
+        assert resp.model == "llama-3.3-70b-versatile"
+        assert "Groq plan" in resp.content
         assert resp.fallback_occurred is False
 
-        mock_post.assert_called_once()
-        args, kwargs = mock_post.call_args
-        assert "/api/generate" in args[0]
-        assert kwargs["json"]["format"] == "json"
+        mock_openai_cls.assert_called_once_with(
+            api_key="gsk_mock_key",
+            base_url="https://api.groq.com/openai/v1",
+            timeout=config.timeout_sec,
+        )
 
 
-def test_gemini_fallback_to_ollama_on_missing_key():
-    """Verifies automatic fallback to Ollama when Gemini API key is missing."""
+def test_groq_fallback_to_gemini_on_error():
+    """Verifies automatic fallback to Gemini when Groq encounters an error."""
     config = LLMConfig(
-        provider=LLMProvider.GEMINI,
-        gemini_api_key=None,  # No key provided
+        provider=LLMProvider.GROQ,
+        groq_api_key="gsk_failing_key",
+        gemini_api_key="gemini_test_key",
         auto_fallback=True,
     )
     client = LLMClient(config=config)
 
-    ollama_mock_json = {
-        "response": '{"plan_description": "Fallback to Ollama", "steps": []}',
-    }
-    mock_resp = MagicMock()
-    mock_resp.status_code = 200
-    mock_resp.json.return_value = ollama_mock_json
+    with patch.object(client, "_call_groq", side_effect=RuntimeError("Groq rate limited")), \
+         patch.object(client, "_call_gemini") as mock_gemini:
+        mock_gemini.return_value = LLMResponse(
+            content='{"plan_description": "Fallback Gemini plan", "steps": []}',
+            provider="gemini",
+            model="gemini-2.5-flash",
+            duration_sec=0.5,
+        )
 
-    with patch("requests.post", return_value=mock_resp):
-        resp = client.generate(prompt="Compile Main.java")
+        resp = client.generate(prompt="Create test plan")
+        assert resp.fallback_occurred is True
+        assert resp.fallback_from == "groq"
+        assert resp.provider == "gemini"
+        assert "Fallback Gemini plan" in resp.content
+        mock_gemini.assert_called_once()
+
+
+def test_gemini_fallback_to_groq_on_error():
+    """Verifies automatic fallback to Groq when Gemini encounters an error."""
+    config = LLMConfig(
+        provider=LLMProvider.GEMINI,
+        gemini_api_key="gemini_failing_key",
+        groq_api_key="gsk_test_key",
+        auto_fallback=True,
+    )
+    client = LLMClient(config=config)
+
+    with patch.object(client, "_call_gemini", side_effect=RuntimeError("Gemini quota exceeded")), \
+         patch.object(client, "_call_groq") as mock_groq:
+        mock_groq.return_value = LLMResponse(
+            content='{"plan_description": "Fallback Groq plan", "steps": []}',
+            provider="groq",
+            model="llama-3.3-70b-versatile",
+            duration_sec=0.2,
+        )
+
+        resp = client.generate(prompt="Read system info")
         assert resp.fallback_occurred is True
         assert resp.fallback_from == "gemini"
-        assert resp.provider == "ollama"
-        assert "Fallback to Ollama" in resp.content
+        assert resp.provider == "groq"
+        assert "Fallback Groq plan" in resp.content
+        mock_groq.assert_called_once()
 
 
 def test_gemini_sdk_uses_configured_timeout_without_retries():
@@ -130,93 +179,59 @@ def test_gemini_sdk_uses_configured_timeout_without_retries():
     assert response.provider == "gemini"
 
 
-def test_openai_fallback_to_ollama_on_api_error():
-    """Verifies automatic fallback to Ollama when OpenAI raises an exception."""
-    config = LLMConfig(
-        provider=LLMProvider.OPENAI,
-        openai_api_key="sk-dummy",
-        auto_fallback=True,
-    )
-    client = LLMClient(config=config)
-
-    ollama_mock_json = {
-        "response": '{"plan_description": "Fallback after OpenAI failure", "steps": []}',
-    }
-    mock_post_resp = MagicMock()
-    mock_post_resp.status_code = 200
-    mock_post_resp.json.return_value = ollama_mock_json
-
-    with patch("openai.OpenAI", side_effect=RuntimeError("Connection timeout")), \
-         patch("requests.post", return_value=mock_post_resp):
-        resp = client.generate(prompt="Spawn process")
-        assert resp.fallback_occurred is True
-        assert resp.fallback_from == "openai"
-        assert "fallback_reason" in resp.metadata
-
-
-def test_openai_compatible_provider_uses_configured_base_url():
-    """Verifies OpenAI-compatible providers such as xAI can set their endpoint."""
-    config = LLMConfig(
-        provider=LLMProvider.OPENAI,
-        openai_api_key="test-key",
-        openai_model="grok-4.7",
-        openai_base_url="https://api.x.ai/v1",
-        auto_fallback=False,
-    )
-    client = LLMClient(config=config)
-
-    with patch("openai.OpenAI") as mock_client_class:
-        mock_client_class.return_value.chat.completions.create.return_value.choices = [
-            MagicMock(message=MagicMock(content='{"status": "ok"}'))
-        ]
-        response = client.generate(prompt="Test prompt")
-
-    assert mock_client_class.call_args.kwargs["base_url"] == "https://api.x.ai/v1"
-    assert response.provider == "openai"
-    assert response.model == "grok-4.7"
-
-
 def test_error_raised_when_fallback_disabled():
     """Verifies that an error is raised directly when auto_fallback is disabled."""
     config = LLMConfig(
-        provider=LLMProvider.GEMINI,
-        gemini_api_key=None,
+        provider=LLMProvider.GROQ,
+        groq_api_key=None,
         auto_fallback=False,
     )
     client = LLMClient(config=config)
 
-    with pytest.raises(LLMClientError, match="Gemini API invocation failed"):
+    with pytest.raises(LLMClientError, match="Groq API invocation failed"):
         client.generate(prompt="Should fail immediately")
 
 
-def test_error_raised_when_all_providers_fail():
-    """Verifies error raised when primary fails and Ollama fallback is unreachable."""
+def test_error_raised_when_no_fallback_configured():
+    """Verifies error raised when Groq fails and no Gemini fallback key is available."""
     config = LLMConfig(
-        provider=LLMProvider.GEMINI,
+        provider=LLMProvider.GROQ,
+        groq_api_key="bad-key",
         gemini_api_key=None,
         auto_fallback=True,
     )
     client = LLMClient(config=config)
 
-    with patch("requests.post", side_effect=ConnectionError("Ollama daemon down")):
-        with pytest.raises(LLMClientError, match="fallback to Ollama also failed"):
-            client.generate(prompt="Should fail everywhere")
+    with patch.object(client, "_call_groq", side_effect=RuntimeError("Auth error")):
+        with pytest.raises(LLMClientError, match="Groq API invocation failed"):
+            client.generate(prompt="Should fail without secondary key")
+
+
+def test_ollama_provider_deprecated():
+    """Verifies that selecting legacy Ollama provider raises a clear guidance error."""
+    config = LLMConfig(provider=LLMProvider.OLLAMA)
+    client = LLMClient(config=config)
+
+    with pytest.raises(LLMClientError, match="Local Ollama provider is disabled"):
+        client.generate(prompt="Should raise disabled error")
 
 
 def test_check_connection():
-    """Verifies connection health probing utility."""
+    """Verifies connection health probing utility for Groq and Gemini."""
     config = LLMConfig(
-        provider=LLMProvider.OLLAMA,
-        ollama_host="http://localhost:11434",
+        provider=LLMProvider.GROQ,
+        groq_api_key="gsk_present",
     )
     client = LLMClient(config=config)
+    status = client.check_connection()
+    assert status["configured_provider"] == "groq"
+    assert status["cloud_key_present"] is True
 
-    mock_resp = MagicMock()
-    mock_resp.status_code = 200
-    mock_resp.json.return_value = {"models": [{"name": "llama3.2:3b"}]}
-
-    with patch("requests.get", return_value=mock_resp):
-        status = client.check_connection()
-        assert status["configured_provider"] == "ollama"
-        assert status["ollama_available"] is True
-        assert "llama3.2:3b" in status["ollama_models"]
+    config_gemini = LLMConfig(
+        provider=LLMProvider.GEMINI,
+        gemini_api_key=None,
+    )
+    client_gemini = LLMClient(config=config_gemini)
+    status_gemini = client_gemini.check_connection()
+    assert status_gemini["configured_provider"] == "gemini"
+    assert status_gemini["cloud_key_present"] is False

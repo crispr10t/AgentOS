@@ -6,6 +6,7 @@ and quarantine deletion into '.agentos_trash' for non-destructive data handling.
 
 from __future__ import annotations
 
+import difflib
 import json
 import os
 from pathlib import Path
@@ -98,12 +99,39 @@ class FileEngine:
             )
 
         if not base_dir.is_dir():
-            return SyscallResult.fail(
-                request=req,
-                error=f"Search path is not a directory: {base_dir}",
-                exit_code=1,
-                duration_sec=time.time() - start_time,
-            )
+            # Typo-tolerant directory resolution for subdirectories within sandbox
+            resolved_fuzzy: Optional[Path] = None
+            if relative_to:
+                target_name = Path(relative_to).name.lower()
+                existing_dirs = [
+                    d for d in self.sandbox_root.iterdir()
+                    if d.is_dir() and d != self.trash_dir
+                ]
+                # 1. Exact case-insensitive match
+                for d in existing_dirs:
+                    if d.name.lower() == target_name:
+                        resolved_fuzzy = d
+                        break
+                # 2. Close match via difflib (e.g. demo_assests -> demo_assets)
+                if not resolved_fuzzy:
+                    dir_names = [d.name for d in existing_dirs]
+                    close_matches = difflib.get_close_matches(
+                        Path(relative_to).name, dir_names, n=1, cutoff=0.5
+                    )
+                    if close_matches:
+                        resolved_fuzzy = self.sandbox_root / close_matches[0]
+
+            if resolved_fuzzy and resolved_fuzzy.is_dir():
+                base_dir = resolved_fuzzy
+            else:
+                # If directory still cannot be resolved, return informative non-crashing result
+                avail = ", ".join([d.name for d in self.sandbox_root.iterdir() if d.is_dir() and d != self.trash_dir]) or "none"
+                return SyscallResult.ok(
+                    request=req,
+                    output=f"No directory named '{relative_to}' found in workspace. Available directories: {avail}",
+                    data=[],
+                    duration_sec=time.time() - start_time,
+                )
 
         matches: list[str] = []
         try:

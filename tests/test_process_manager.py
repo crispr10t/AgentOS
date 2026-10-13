@@ -10,6 +10,7 @@ import pytest
 from kernel.process_manager import (
     ProcessManager,
     ProcessSecurityError,
+    resolve_application_executable,
 )
 from kernel.syscalls import SyscallType
 
@@ -101,6 +102,42 @@ def test_open_application_rejects_arbitrary_names(pm: ProcessManager):
     assert result.exit_code == 126
 
 
+def test_open_brave_launches_with_new_window(pm: ProcessManager):
+    """Verify brave launches with --new-window and proper GUI creation flags."""
+    mock_process = MagicMock(pid=7788)
+    mock_process.poll.return_value = None
+    with patch("kernel.process_manager.os.name", "nt"), patch(
+        "kernel.process_manager.resolve_application_executable",
+        return_value=r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe",
+    ), patch("kernel.process_manager.subprocess.Popen", return_value=mock_process) as popen:
+        result = pm.open_application("brave")
+
+    assert result.success is True
+    assert result.data == {"app": "brave", "pid": 7788}
+    assert popen.call_args.args[0] == [
+        r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe",
+        "--new-window",
+    ]
+    assert popen.call_args.kwargs["creationflags"] == subprocess.CREATE_NEW_PROCESS_GROUP
+    assert "startupinfo" in popen.call_args.kwargs
+    assert popen.call_args.kwargs["startupinfo"] is not None
+
+
+def test_open_application_detects_immediate_failure(pm: ProcessManager):
+    """Verify open_application returns failure when the process exits immediately with an error."""
+    mock_process = MagicMock(pid=9999)
+    mock_process.poll.return_value = 1
+    with patch("kernel.process_manager.os.name", "nt"), patch(
+        "kernel.process_manager.resolve_application_executable",
+        return_value=r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe",
+    ), patch("kernel.process_manager.subprocess.Popen", return_value=mock_process):
+        result = pm.open_application("brave")
+
+    assert result.success is False
+    assert result.exit_code == 1
+    assert "failed to launch" in result.error
+
+
 def test_custom_cwd_and_stdin(pm: ProcessManager, tmp_path: Path):
     """Verify that cwd and stdin piping work as expected."""
     test_script = (
@@ -122,3 +159,92 @@ def test_kill_process_by_pid(pm: ProcessManager):
     res = pm.kill_process(pid=99999999)
     assert res.success is False
     assert res.exit_code == 1
+
+
+def test_process_spawn_python_script_direct(pm: ProcessManager, tmp_path: Path):
+    """Verify that passing a .py script directly auto-invokes Python."""
+    script_file = tmp_path / "hello_script.py"
+    script_file.write_text("print('HELLO FROM PYTHON SCRIPT')")
+
+    res = pm.spawn([str(script_file)], cwd=tmp_path)
+    assert res.success is True
+    assert "HELLO FROM PYTHON SCRIPT" in (res.output or "")
+
+
+def test_process_spawn_workspace_file_allowed(pm: ProcessManager, tmp_path: Path):
+    """Verify that local files inside cwd/workspace pass validation."""
+    custom_script = tmp_path / "custom_worker.py"
+    custom_script.write_text("print('WORKER RUNNING')")
+
+    tokens = pm.validate_command(["custom_worker.py"], cwd=tmp_path)
+    assert tokens == ["custom_worker.py"]
+
+
+def test_process_spawn_shell_builtin_dir(pm: ProcessManager, tmp_path: Path):
+    """Verify that Windows shell built-in 'dir' executes properly."""
+    if sys.platform != "win32":
+        pytest.skip("Windows only test for dir built-in")
+    res = pm.spawn(["dir"], cwd=tmp_path)
+    assert res.success is True
+    assert res.exit_code == 0
+
+
+def test_resolve_application_executable_aliases():
+    """Verify that file manager and desktop app aliases resolve correctly."""
+    with patch("kernel.process_manager.shutil.which", return_value=r"C:\Windows\explorer.exe"):
+        assert resolve_application_executable("file manager") == r"C:\Windows\explorer.exe"
+        assert resolve_application_executable("file explorer") == r"C:\Windows\explorer.exe"
+        assert resolve_application_executable("files") == r"C:\Windows\explorer.exe"
+        assert resolve_application_executable("my computer") == r"C:\Windows\explorer.exe"
+
+
+def test_open_file_manager_success(pm: ProcessManager):
+    """Verify open_application launches file manager without false failure."""
+    mock_process = MagicMock(pid=1234)
+    mock_process.poll.return_value = 0
+    with patch("kernel.process_manager.os.name", "nt"), patch(
+        "kernel.process_manager.resolve_application_executable",
+        return_value=r"C:\Windows\explorer.exe",
+    ), patch("kernel.process_manager.subprocess.Popen", return_value=mock_process):
+        result = pm.open_application("file manager")
+
+    assert result.success is True
+    assert result.data["app"] == "file_manager"
+
+
+def test_open_shell_target_uses_startfile(pm: ProcessManager):
+    """Verify packaged UWP / Windows Store apps are launched via os.startfile."""
+    target = r"shell:AppsFolder\TelegramMessengerLLP.TelegramDesktop_t4vj0pshhgkwm!Telegram.TelegramDesktop.Store"
+    with patch("kernel.process_manager.os.name", "nt"), patch(
+        "kernel.process_manager.resolve_application_executable",
+        return_value=target,
+    ), patch("kernel.process_manager.os.startfile") as mock_startfile:
+        result = pm.open_application("telegram")
+
+    assert result.success is True
+    assert result.data["app"] == "telegram"
+    mock_startfile.assert_called_once_with(target)
+
+
+def test_open_obsidian_custom_drive(pm: ProcessManager):
+    """Verify apps on secondary drives (e.g. D:) launch successfully."""
+    mock_process = MagicMock(pid=5678)
+    mock_process.poll.return_value = None
+    with patch("kernel.process_manager.os.name", "nt"), patch(
+        "kernel.process_manager.resolve_application_executable",
+        return_value=r"D:\obsidian\Obsidian.exe",
+    ), patch("kernel.process_manager.subprocess.Popen", return_value=mock_process) as popen:
+        result = pm.open_application("obsidian")
+
+    assert result.success is True
+    assert result.data == {"app": "obsidian", "pid": 5678}
+    assert popen.call_args.args[0] == [r"D:\obsidian\Obsidian.exe"]
+
+
+def test_validate_app_name_dynamic(pm: ProcessManager):
+    """Verify _validate_app_name accepts aliases and dynamic desktop apps."""
+    assert pm._validate_app_name("file manager") == "explorer.exe"
+    assert pm._validate_app_name("file explorer") == "explorer.exe"
+    assert pm._validate_app_name("telegram") == "Telegram.exe"
+    assert pm._validate_app_name("obsidian") == "Obsidian.exe"
+

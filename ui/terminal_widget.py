@@ -49,17 +49,40 @@ class TerminalWidget(QWidget):
 
         # 1. Header Toolbar
         toolbar = QHBoxLayout()
-        toolbar.setContentsMargins(4, 4, 4, 4)
+        toolbar.setContentsMargins(2, 2, 2, 2)
 
-        title = QLabel("Supervisor Audit Console & Stream")
-        title.setStyleSheet("font-size: 13px; font-weight: bold; color: #f4f4f5;")
+        title = QLabel("Audit Console")
+        title.setStyleSheet("font-size: 13px; font-weight: 600; color: #f8fafc;")
         toolbar.addWidget(title)
 
         toolbar.addStretch()
 
         self.scroll_check = QCheckBox("Auto-scroll")
         self.scroll_check.setChecked(True)
-        self.scroll_check.setStyleSheet("color: #a1a1aa; font-size: 11px;")
+        self.scroll_check.setStyleSheet(
+            """
+            QCheckBox {
+                color: #64748b;
+                font-size: 11px;
+                font-weight: 500;
+                spacing: 6px;
+            }
+            QCheckBox:hover {
+                color: #94a3b8;
+            }
+            QCheckBox::indicator {
+                width: 14px;
+                height: 14px;
+                border-radius: 4px;
+                border: 1px solid #282e40;
+                background-color: #141720;
+            }
+            QCheckBox::indicator:checked {
+                background-color: #4f46e5;
+                border-color: #6366f1;
+            }
+            """
+        )
         self.scroll_check.toggled.connect(self._toggle_auto_scroll)
         toolbar.addWidget(self.scroll_check)
 
@@ -68,16 +91,21 @@ class TerminalWidget(QWidget):
         self.copy_btn.setStyleSheet(
             """
             QPushButton {
-                background-color: #27272a;
-                color: #e4e4e7;
-                border: 1px solid #3f3f46;
-                border-radius: 4px;
-                padding: 3px 8px;
+                background-color: #141720;
+                color: #94a3b8;
+                border: 1px solid #202432;
+                border-radius: 6px;
+                padding: 3px 10px;
                 font-size: 11px;
+                font-weight: 500;
             }
             QPushButton:hover {
-                background-color: #3f3f46;
-                color: #ffffff;
+                background-color: #1c202d;
+                color: #f1f5f9;
+                border-color: #2e3549;
+            }
+            QPushButton:pressed {
+                background-color: #0f1117;
             }
             """
         )
@@ -89,16 +117,21 @@ class TerminalWidget(QWidget):
         self.clear_btn.setStyleSheet(
             """
             QPushButton {
-                background-color: #27272a;
-                color: #e4e4e7;
-                border: 1px solid #3f3f46;
-                border-radius: 4px;
-                padding: 3px 8px;
+                background-color: #141720;
+                color: #94a3b8;
+                border: 1px solid #202432;
+                border-radius: 6px;
+                padding: 3px 10px;
                 font-size: 11px;
+                font-weight: 500;
             }
             QPushButton:hover {
-                background-color: #3f3f46;
-                color: #ffffff;
+                background-color: #1c202d;
+                color: #f1f5f9;
+                border-color: #2e3549;
+            }
+            QPushButton:pressed {
+                background-color: #0f1117;
             }
             """
         )
@@ -117,12 +150,12 @@ class TerminalWidget(QWidget):
         self.editor.setStyleSheet(
             """
             QPlainTextEdit {
-                background-color: #0f1117;
+                background-color: #090a0f;
                 color: #e2e8f0;
-                border: 1px solid #27272a;
-                border-radius: 6px;
-                padding: 8px;
-                selection-background-color: #312e81;
+                border: 1px solid #1e222d;
+                border-radius: 8px;
+                padding: 10px;
+                selection-background-color: #1e1b4b;
                 selection-color: #ffffff;
             }
             """

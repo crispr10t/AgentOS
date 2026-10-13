@@ -50,6 +50,17 @@ class PrivilegeGate:
             self.enable_ring0_prompt = bool(enable_ring0_prompt)
 
         self.confirm_callback = confirm_callback
+        self.whitelisted_apps: set[str] = set()
+
+    def is_app_whitelisted(self, app_name: str) -> bool:
+        """Checks if an application name has been dynamically whitelisted."""
+        norm = str(app_name).strip().lower().replace(" ", "_").replace("-", "")
+        return norm in self.whitelisted_apps
+
+    def whitelist_app(self, app_name: str) -> None:
+        """Dynamically adds an application to the approved whitelist."""
+        norm = str(app_name).strip().lower().replace(" ", "_").replace("-", "")
+        self.whitelisted_apps.add(norm)
 
     def classify(self, syscall: SyscallType) -> PrivilegeRing:
         """Returns the default privilege classification ring for a system call type.
@@ -73,7 +84,13 @@ class PrivilegeGate:
         """
         if not self.enable_ring0_prompt:
             return False
-        return request.ring == PrivilegeRing.RING_0
+        if request.ring != PrivilegeRing.RING_0:
+            return False
+        if request.syscall == SyscallType.APP_OPEN:
+            app_target = request.params.get("app", "")
+            if app_target and self.is_app_whitelisted(app_target):
+                return False
+        return True
 
     def check_privilege(
         self,
