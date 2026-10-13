@@ -140,6 +140,7 @@ flowchart TD
 - **Real-Time Process Control Block (PCB) Inspector:** Live visual representation of task states (`NEW`, `READY`, `RUNNING`, `WAITING`, `TERMINATED`).
 - **Multi-Algorithm Task Scheduler:** Switch dynamically between **First-Come-First-Served (FCFS)**, **Priority Scheduling**, and **Shortest Job First (SJF)**.
 - **Transactional Filesystem with Undo:** Safe file movements and deletions backed by a write-ahead journal and quarantine directory.
+- **Approved Windows App Launching:** Open Calculator, Notepad, Task Manager, or Edge through a dedicated Ring 0 syscall and explicit user confirmation.
 - **Dual-LLM Engine:** Full support for **100% offline, private local models via Ollama** (`llama3.2`, `mistral`, `qwen2.5`) or cloud APIs (Google Gemini, OpenAI).
 - **Subprocess Tree Isolation & Timeout Guard:** Prevents runaway infinite loops or zombie processes from degrading host performance.
 - **Real-Time Hardware Telemetry:** Dynamic CPU per-core utilization and memory meters via non-blocking background polling.
@@ -152,7 +153,7 @@ AgentOS implements defence-in-depth principles:
 
 1. **Canonical Path Jail:** Every path argument is resolved using `Path(target).resolve()`. If the resolved path does not start with an authorized sandbox root, the call is rejected with `ERR_PERMISSION_DENIED`.
 2. **Quarantine Over Deletion:** The `sys_file_delete` call moves files to `.agentos_trash/<timestamp>_<filename>` with recovery metadata, avoiding irreversible data loss.
-3. **Command Whitelisting:** Execution is restricted to pre-approved compilers and interpreters (`python`, `javac`, `java`, `gcc`) with explicit argument sanitization. Arbitrary shell command strings (`cmd.exe /c`, `sh -c`) are prohibited.
+3. **Command Whitelisting:** Execution is restricted to pre-approved compilers and interpreters (`python`, `javac`, `java`, `gcc`) with explicit argument sanitization. Arbitrary shell command strings (`cmd.exe /c`, `sh -c`) are prohibited. Desktop application launching is limited to Calculator, Notepad, Task Manager, and Edge through a separate fixed-target syscall.
 4. **Execution Timeouts:** All child processes enforce a strict default timeout (e.g., 10 seconds), preventing infinite loops.
 5. **Secret Redaction:** API keys and environment variables are strictly loaded via `.env` and never written to logs or SQLite audit tables.
 
@@ -309,6 +310,8 @@ OLLAMA_MODEL=llama3.2:3b
 OLLAMA_HOST=http://localhost:11434
 GEMINI_API_KEY=
 OPENAI_API_KEY=
+OPENAI_BASE_URL=                     # Optional OpenAI-compatible endpoint (e.g. https://api.x.ai/v1)
+OPENAI_MODEL=gpt-4o-mini             # For xAI, set this to an available Grok model
 
 # --- Supervisor & Kernel Settings ---
 DEFAULT_SCHEDULER_POLICY=FCFS        # 'FCFS', 'PRIORITY', or 'SJF'

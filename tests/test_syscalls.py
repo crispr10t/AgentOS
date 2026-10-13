@@ -15,12 +15,14 @@ def test_syscall_types_and_rings():
     assert SyscallType.PROC_SPAWN.value == "PROC_SPAWN"
     assert SyscallType.FILE_SEARCH.value == "FILE_SEARCH"
     assert SyscallType.FILE_DELETE.value == "FILE_DELETE"
+    assert SyscallType.APP_OPEN.value == "APP_OPEN"
 
     # Verify default rings
     assert DEFAULT_SYSCALL_RINGS[SyscallType.FILE_SEARCH] == PrivilegeRing.RING_3
     assert DEFAULT_SYSCALL_RINGS[SyscallType.SYS_INFO] == PrivilegeRing.RING_3
     assert DEFAULT_SYSCALL_RINGS[SyscallType.PROC_SPAWN] == PrivilegeRing.RING_0
     assert DEFAULT_SYSCALL_RINGS[SyscallType.FILE_DELETE] == PrivilegeRing.RING_0
+    assert DEFAULT_SYSCALL_RINGS[SyscallType.APP_OPEN] == PrivilegeRing.RING_0
 
 
 def test_syscall_request_automatic_ring_assignment():

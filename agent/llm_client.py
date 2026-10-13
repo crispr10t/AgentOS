@@ -40,6 +40,7 @@ class LLMConfig(BaseModel):
     gemini_model: str = "gemini-2.5-flash"
     openai_api_key: Optional[str] = None
     openai_model: str = "gpt-4o-mini"
+    openai_base_url: Optional[str] = None
     timeout_sec: float = 30.0
     temperature: float = 0.1
     auto_fallback: bool = True
@@ -61,6 +62,7 @@ class LLMConfig(BaseModel):
             gemini_model=os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),
             openai_api_key=os.getenv("OPENAI_API_KEY") or None,
             openai_model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
+            openai_base_url=os.getenv("OPENAI_BASE_URL") or None,
             timeout_sec=float(os.getenv("LLM_TIMEOUT_SECONDS", "30.0")),
             temperature=float(os.getenv("LLM_TEMPERATURE", "0.1")),
             auto_fallback=os.getenv("LLM_AUTO_FALLBACK", "true").lower() in ("1", "true", "yes"),
@@ -171,7 +173,10 @@ class LLMClient:
         if self._mock_handler is not None:
             content = self._mock_handler(prompt, system)
         else:
-            content = "{}"
+            content = (
+                '{"plan_description": "Mock mode is active; no actions were '
+                'generated or executed.", "steps": []}'
+            )
         return LLMResponse(
             content=content,
             provider="mock",
@@ -231,7 +236,13 @@ class LLMClient:
             from google import genai
             from google.genai import types
 
-            client = genai.Client(api_key=self.config.gemini_api_key)
+            client = genai.Client(
+                api_key=self.config.gemini_api_key,
+                http_options=types.HttpOptions(
+                    timeout=int(self.config.timeout_sec * 1000),
+                    retry_options=types.HttpRetryOptions(attempts=1),
+                ),
+            )
             config_args: dict[str, Any] = {
                 "temperature": self.config.temperature,
             }
@@ -292,10 +303,13 @@ class LLMClient:
 
         from openai import OpenAI
 
-        client = OpenAI(
-            api_key=self.config.openai_api_key,
-            timeout=self.config.timeout_sec,
-        )
+        client_options: dict[str, Any] = {
+            "api_key": self.config.openai_api_key,
+            "timeout": self.config.timeout_sec,
+        }
+        if self.config.openai_base_url:
+            client_options["base_url"] = self.config.openai_base_url
+        client = OpenAI(**client_options)
         messages: list[dict[str, str]] = []
         if system:
             messages.append({"role": "system", "content": system})

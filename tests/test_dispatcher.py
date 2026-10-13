@@ -11,6 +11,7 @@ from kernel.syscalls import (
     PrivilegeRing,
     SyscallDispatcher,
     SyscallRequest,
+    SyscallResult,
     SyscallType,
 )
 from security.privilege import PrivilegeGate
@@ -92,6 +93,35 @@ def test_dispatcher_ring0_allowed_with_confirmation(dispatcher_suite: dict):
     read_res = dispatcher.dispatch(req_read)
     assert read_res.success is True
     assert read_res.output == "approved content"
+
+
+def test_dispatcher_app_open_requires_ring0_confirmation(dispatcher_suite: dict):
+    """Verify approved app launches pass through the Ring 0 confirmation gate."""
+    dispatcher: SyscallDispatcher = dispatcher_suite["dispatcher"]
+    process_manager = dispatcher.process_manager
+
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr(
+            process_manager,
+            "open_application",
+            lambda app_name, request: SyscallResult.ok(
+                request=request,
+                output=f"Opened {app_name}.",
+                data={"app": app_name, "pid": 1234},
+            ),
+        )
+        request = SyscallRequest(
+            syscall=SyscallType.APP_OPEN,
+            params={"app": "calculator"},
+        )
+
+        denied = dispatcher.dispatch(request, user_confirmed=False)
+        assert denied.success is False
+        assert denied.exit_code == 126
+
+        approved = dispatcher.dispatch(request, user_confirmed=True)
+        assert approved.success is True
+        assert approved.output == "Opened calculator."
 
 
 def test_dispatcher_process_spawn_with_pcb(dispatcher_suite: dict):

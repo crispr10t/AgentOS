@@ -107,6 +107,29 @@ def test_gemini_fallback_to_ollama_on_missing_key():
         assert "Fallback to Ollama" in resp.content
 
 
+def test_gemini_sdk_uses_configured_timeout_without_retries():
+    """Verifies Gemini requests respect the timeout and don't retry silently."""
+    config = LLMConfig(
+        provider=LLMProvider.GEMINI,
+        gemini_api_key="test-key",
+        timeout_sec=12.5,
+        auto_fallback=False,
+    )
+    client = LLMClient(config=config)
+
+    with patch("google.genai.Client") as mock_client_class:
+        mock_client_class.return_value.models.generate_content.return_value.text = (
+            '{"status": "ok"}'
+        )
+
+        response = client.generate(prompt="Test prompt")
+
+    http_options = mock_client_class.call_args.kwargs["http_options"]
+    assert http_options.timeout == 12_500
+    assert http_options.retry_options.attempts == 1
+    assert response.provider == "gemini"
+
+
 def test_openai_fallback_to_ollama_on_api_error():
     """Verifies automatic fallback to Ollama when OpenAI raises an exception."""
     config = LLMConfig(
@@ -129,6 +152,28 @@ def test_openai_fallback_to_ollama_on_api_error():
         assert resp.fallback_occurred is True
         assert resp.fallback_from == "openai"
         assert "fallback_reason" in resp.metadata
+
+
+def test_openai_compatible_provider_uses_configured_base_url():
+    """Verifies OpenAI-compatible providers such as xAI can set their endpoint."""
+    config = LLMConfig(
+        provider=LLMProvider.OPENAI,
+        openai_api_key="test-key",
+        openai_model="grok-4.7",
+        openai_base_url="https://api.x.ai/v1",
+        auto_fallback=False,
+    )
+    client = LLMClient(config=config)
+
+    with patch("openai.OpenAI") as mock_client_class:
+        mock_client_class.return_value.chat.completions.create.return_value.choices = [
+            MagicMock(message=MagicMock(content='{"status": "ok"}'))
+        ]
+        response = client.generate(prompt="Test prompt")
+
+    assert mock_client_class.call_args.kwargs["base_url"] == "https://api.x.ai/v1"
+    assert response.provider == "openai"
+    assert response.model == "grok-4.7"
 
 
 def test_error_raised_when_fallback_disabled():

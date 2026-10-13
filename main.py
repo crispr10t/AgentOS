@@ -32,7 +32,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--mock-llm",
         action="store_true",
-        help="Use deterministic mock LLM provider without making network or local API calls.",
+        help="Use a no-op mock provider; instructions are not interpreted or executed.",
     )
     parser.add_argument(
         "--offscreen",

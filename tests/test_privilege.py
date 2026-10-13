@@ -15,6 +15,7 @@ def test_privilege_classification():
 
     assert gate.classify(SyscallType.PROC_SPAWN) == PrivilegeRing.RING_0
     assert gate.classify(SyscallType.PROC_KILL) == PrivilegeRing.RING_0
+    assert gate.classify(SyscallType.APP_OPEN) == PrivilegeRing.RING_0
     assert gate.classify(SyscallType.FILE_WRITE) == PrivilegeRing.RING_0
     assert gate.classify(SyscallType.FILE_MOVE) == PrivilegeRing.RING_0
     assert gate.classify(SyscallType.FILE_DELETE) == PrivilegeRing.RING_0

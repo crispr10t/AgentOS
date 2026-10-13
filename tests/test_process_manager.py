@@ -1,8 +1,10 @@
 """Tests for kernel/process_manager.py: Process Execution, Watchdog & Tree Killer."""
 
 from pathlib import Path
+import subprocess
 import sys
 import time
+from unittest.mock import MagicMock, patch
 import pytest
 
 from kernel.process_manager import (
@@ -75,6 +77,28 @@ def test_unauthorized_binary_rejected(pm: ProcessManager):
     assert res.success is False
     assert res.exit_code == 126
     assert "not in the approved whitelist" in (res.error or "")
+
+
+def test_open_approved_application_uses_fixed_target(pm: ProcessManager):
+    """Verify app launching only starts a fixed allowlisted executable."""
+    mock_process = MagicMock(pid=2468)
+    with patch("kernel.process_manager.os.name", "nt"), patch(
+        "kernel.process_manager.shutil.which", return_value=r"C:\Windows\System32\notepad.exe"
+    ), patch("kernel.process_manager.subprocess.Popen", return_value=mock_process) as popen:
+        result = pm.open_application("notepad")
+
+    assert result.success is True
+    assert result.data == {"app": "notepad", "pid": 2468}
+    assert popen.call_args.args[0] == [r"C:\Windows\System32\notepad.exe"]
+    assert popen.call_args.kwargs["stdin"] == subprocess.DEVNULL
+
+
+def test_open_application_rejects_arbitrary_names(pm: ProcessManager):
+    """Verify app names cannot supply arbitrary executable paths or commands."""
+    result = pm.open_application(r"C:\Windows\System32\cmd.exe")
+
+    assert result.success is False
+    assert result.exit_code == 126
 
 
 def test_custom_cwd_and_stdin(pm: ProcessManager, tmp_path: Path):

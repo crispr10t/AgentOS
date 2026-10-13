@@ -18,7 +18,7 @@ import uuid
 
 from pydantic import BaseModel, Field, field_validator
 
-from agent.llm_client import LLMClient, LLMResponse
+from agent.llm_client import LLMClient, LLMClientError, LLMResponse
 from agent.prompts import (
     SYSTEM_PROMPT,
     build_planning_prompt,
@@ -428,6 +428,8 @@ class AgentPlanner:
 
                 return plan
 
+            except LLMClientError as exc:
+                raise PlanError(f"Language model request failed: {exc}") from exc
             except Exception as exc:
                 last_error_msg = f"{type(exc).__name__}: {exc}"
                 if attempt == self.max_retries - 1:

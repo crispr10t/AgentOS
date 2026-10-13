@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from agent.llm_client import LLMClient, LLMConfig, LLMProvider
+from agent.llm_client import LLMClient, LLMClientError, LLMConfig, LLMProvider
 from agent.planner import (
     AgentPlanner,
     PlanError,
@@ -238,6 +238,21 @@ def test_planner_compile_successful():
     assert plan.metadata["attempts_needed"] == 1
 
 
+def test_planner_default_mock_provider_returns_explicit_noop_plan():
+    """Verifies mock mode compiles a valid no-op instead of invalid empty JSON."""
+    client = LLMClient(config=LLMConfig(provider=LLMProvider.MOCK))
+    planner = AgentPlanner(llm_client=client)
+
+    plan = planner.compile("Can u open my task manager")
+
+    assert plan.plan_description == (
+        "Mock mode is active; no actions were generated or executed."
+    )
+    assert plan.steps == []
+    assert plan.metadata["provider"] == "mock"
+    assert plan.metadata["attempts_needed"] == 1
+
+
 def test_planner_reprompt_recovery_loop():
     """Verifies self-healing recovery loop when initial response is malformed."""
     call_count = 0
@@ -272,6 +287,27 @@ def test_planner_reprompt_recovery_loop():
     assert plan.plan_description == "Recovered plan"
     assert plan.metadata["attempts_needed"] == 2
     assert call_count == 2
+
+
+def test_planner_does_not_retry_llm_request_failures():
+    """Verifies provider failures are reported immediately rather than retried."""
+    call_count = 0
+
+    def failing_llm(prompt: str, system: str | None) -> str:
+        nonlocal call_count
+        call_count += 1
+        raise LLMClientError("Gemini request timed out")
+
+    client = LLMClient(
+        config=LLMConfig(provider=LLMProvider.MOCK),
+        mock_handler=failing_llm,
+    )
+    planner = AgentPlanner(llm_client=client, max_retries=3)
+
+    with pytest.raises(PlanError, match="Language model request failed"):
+        planner.compile("Show system information")
+
+    assert call_count == 1
 
 
 def test_planner_enqueue_to_scheduler():
@@ -425,4 +461,3 @@ def test_planner_exhausted_retries_raises_error():
 
     with pytest.raises(PlanError, match="Failed to compile plan after 2 attempts"):
         planner.compile("Something impossible")
-

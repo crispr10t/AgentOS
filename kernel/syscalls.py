@@ -26,6 +26,10 @@ class SyscallType(str, Enum):
 
     PROC_SPAWN = "PROC_SPAWN"
     PROC_KILL = "PROC_KILL"
+    APP_OPEN = "APP_OPEN"
+    APP_OPEN_URL = "APP_OPEN_URL"
+    APP_CLOSE_TAB = "APP_CLOSE_TAB"
+    CALCULATE = "CALCULATE"
     FILE_SEARCH = "FILE_SEARCH"
     FILE_READ = "FILE_READ"
     FILE_WRITE = "FILE_WRITE"
@@ -38,6 +42,10 @@ class SyscallType(str, Enum):
 DEFAULT_SYSCALL_RINGS: dict[SyscallType, PrivilegeRing] = {
     SyscallType.PROC_SPAWN: PrivilegeRing.RING_0,
     SyscallType.PROC_KILL: PrivilegeRing.RING_0,
+    SyscallType.APP_OPEN: PrivilegeRing.RING_0,
+    SyscallType.APP_OPEN_URL: PrivilegeRing.RING_0,
+    SyscallType.APP_CLOSE_TAB: PrivilegeRing.RING_0,
+    SyscallType.CALCULATE: PrivilegeRing.RING_0,
     SyscallType.FILE_SEARCH: PrivilegeRing.RING_3,
     SyscallType.FILE_READ: PrivilegeRing.RING_3,
     SyscallType.FILE_WRITE: PrivilegeRing.RING_0,
@@ -223,7 +231,52 @@ class SyscallDispatcher:
         # 3. Route to subsystem
         params = request.params or {}
         try:
-            if request.syscall == SyscallType.PROC_SPAWN:
+            if request.syscall == SyscallType.APP_OPEN:
+                app_name = params.get("app")
+                if not app_name:
+                    result = SyscallResult.fail(
+                        request=request,
+                        error="Missing required parameter 'app'.",
+                        exit_code=1,
+                    )
+                else:
+                    result = self.process_manager.open_application(
+                        app_name=app_name,
+                        request=request,
+                    )
+            elif request.syscall == SyscallType.APP_OPEN_URL:
+                url = params.get("url")
+                if not url:
+                    result = SyscallResult.fail(
+                        request=request,
+                        error="Missing required parameter 'url'.",
+                        exit_code=1,
+                    )
+                else:
+                    result = self.process_manager.open_edge_url(
+                        url=url,
+                        request=request,
+                    )
+            elif request.syscall == SyscallType.APP_CLOSE_TAB:
+                result = self.process_manager.close_edge_tab(
+                    url=params.get("url"),
+                    pid=params.get("pid"),
+                    request=request,
+                )
+            elif request.syscall == SyscallType.CALCULATE:
+                expression = params.get("expression")
+                if not expression:
+                    result = SyscallResult.fail(
+                        request=request,
+                        error="Missing required parameter 'expression'.",
+                        exit_code=1,
+                    )
+                else:
+                    result = self.process_manager.calculate_expression(
+                        expression=expression,
+                        request=request,
+                    )
+            elif request.syscall == SyscallType.PROC_SPAWN:
                 cmd = params.get("cmd")
                 if not cmd:
                     result = SyscallResult.fail(
@@ -415,4 +468,3 @@ class SyscallDispatcher:
             self.db_manager.log_syscall(request=undo_req, result=result)
 
         return result
-

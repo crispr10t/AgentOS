@@ -120,18 +120,43 @@ You do NOT execute commands yourself. You compile instructions into a structured
      * "cwd": string (optional working directory within sandbox)
      * "memory_limit_mb": integer (optional ceiling, default 512)
 
-7. PROC_KILL (Ring 0 - Privileged):
+7. APP_OPEN (Ring 0 - Privileged):
+   - Open one approved Windows desktop application. Do not pass arbitrary commands or arguments.
+   - Params:
+     * "app": one of "calculator", "notepad", "task_manager", or "edge"
+   - Use APP_OPEN when the user asks to launch one of these applications. Do not use PROC_SPAWN for desktop apps.
+
+8. APP_OPEN_URL (Ring 0 - Privileged):
+   - Open a single validated URL in Microsoft Edge using a fixed browser launch pattern.
+   - Params:
+     * "url": string that starts with "http://", "https://", or "www."
+   - This is only for opening a URL in Edge; no arbitrary browser command or shell injection is allowed.
+
+9. APP_CLOSE_TAB (Ring 0 - Privileged):
+   - Close a specific Edge tab/window previously opened by AgentOS.
+   - Params:
+     * "url": string (optional) for a tracked URL you previously opened
+     * "pid": integer (optional) for the tracked Edge process ID
+   - If neither parameter is supplied, close the most recently opened tracked Edge window.
+
+10. CALCULATE (Ring 0 - Privileged):
+   - Evaluate a simple arithmetic expression with numeric constants and +, -, *, /, //, %, ** and unary +/-.
+   - Params:
+     * "expression": string such as "2 + 3 * 4" or "(10 + 2) / 3"
+   - This action is a safe calculator evaluation and must not invoke arbitrary shells or scripts.
+
+11. PROC_KILL (Ring 0 - Privileged):
    - Terminate an active process tree by PID.
    - Params:
      * "pid": integer (PID to kill)
 
-8. SYS_INFO (Ring 3 - Safe):
+9. SYS_INFO (Ring 3 - Safe):
    - Retrieve host CPU count, platform info, and memory diagnostics.
    - Params: {{}} (empty object)
 
 === PRIVILEGE RINGS ===
 - Ring 3 (Unprivileged / Safe): Read-only operations (FILE_SEARCH, FILE_READ, SYS_INFO). Executed automatically.
-- Ring 0 (Privileged / Destructive): File mutations and subprocess execution (FILE_WRITE, FILE_MOVE, FILE_DELETE, PROC_SPAWN, PROC_KILL). Requires human elevation or supervisor confirmation.
+- Ring 0 (Privileged / Destructive): File mutations and process/application execution (FILE_WRITE, FILE_MOVE, FILE_DELETE, PROC_SPAWN, APP_OPEN, PROC_KILL). Requires human elevation or supervisor confirmation.
 
 === SECURITY MANDATES ===
 1. NEVER invoke arbitrary shell wrapper commands such as ["cmd.exe", "/c", ...], ["powershell", "-command", ...], or ["sh", "-c", ...].
@@ -360,7 +385,8 @@ def build_reprompt_prompt(
         "INSTRUCTIONS FOR CORRECTION:\n"
         "1. Fix the error above and ensure all required fields ('plan_description', 'steps') are present.\n"
         "2. Ensure every step has 'step_id', 'syscall', and 'params'.\n"
-        "3. Ensure 'syscall' is one of: FILE_SEARCH, FILE_READ, FILE_WRITE, FILE_MOVE, FILE_DELETE, PROC_SPAWN, PROC_KILL, SYS_INFO.\n"
+        "3. Ensure 'syscall' is one of: FILE_SEARCH, FILE_READ, FILE_WRITE, FILE_MOVE, FILE_DELETE, PROC_SPAWN, APP_OPEN, PROC_KILL, SYS_INFO.\n"
         "4. In PROC_SPAWN, ensure 'cmd' is an array of strings (e.g. [\"python\", \"script.py\"]).\n"
-        "5. Respond with ONLY the corrected JSON object. Do NOT include markdown commentary."
+        "5. In APP_OPEN, 'app' must be one of: calculator, notepad, task_manager, edge.\n"
+        "6. Respond with ONLY the corrected JSON object. Do NOT include markdown commentary."
     )
