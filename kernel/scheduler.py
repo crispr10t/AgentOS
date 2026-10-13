@@ -27,6 +27,16 @@ class SchedulingPolicy(str, Enum):
     PRIORITY = "PRIORITY"  # Priority Scheduling (ordered by user priority)
     SJF = "SJF"            # Shortest Job First (ordered by estimated duration)
 
+    @classmethod
+    def _missing_(cls, value: object) -> Optional["SchedulingPolicy"]:
+        """Enables case-insensitive policy lookup (e.g. 'Priority' -> PRIORITY)."""
+        if isinstance(value, str):
+            clean = value.strip().upper()
+            for member in cls:
+                if member.value == clean or member.name == clean:
+                    return member
+        return None
+
 
 class TaskScheduler:
     """Thread-safe task scheduler governing the ready-queue dispatch order.

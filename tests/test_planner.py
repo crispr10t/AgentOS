@@ -461,3 +461,17 @@ def test_planner_exhausted_retries_raises_error():
 
     with pytest.raises(PlanError, match="Failed to compile plan after 2 attempts"):
         planner.compile("Something impossible")
+
+
+def test_sanitize_step_params_unescapes_literal_newlines():
+    """Verifies that sanitize_step_params unescapes literal \n sequences in FILE_WRITE."""
+    from agent.planner import sanitize_step_params
+
+    step = PlanStep(
+        step_id=1,
+        syscall=SyscallType.FILE_WRITE,
+        params={"path": "script.py", "content": "import sys\\nprint('hi')\\n"},
+    )
+    sanitize_step_params(step)
+    assert step.params["content"] == "import sys\nprint('hi')\n"
+

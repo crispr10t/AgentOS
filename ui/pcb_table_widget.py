@@ -8,13 +8,14 @@ from __future__ import annotations
 
 from typing import Optional
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QFont
 from PyQt6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QPushButton,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -39,6 +40,8 @@ TERMINATED_ERROR_COLORS = ("#450a0a", "#f87171")       # Soft red (non-zero exit
 
 class PcbTableWidget(QWidget):
     """Table widget presenting live Process Control Blocks tracked by the supervisor."""
+
+    sig_cleared = pyqtSignal()
 
     COLUMNS = [
         "PID",
@@ -87,6 +90,34 @@ class PcbTableWidget(QWidget):
             """
         )
         header_bar.addWidget(self.count_badge)
+
+        self.clear_btn = QPushButton("Clear")
+        self.clear_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.clear_btn.setStyleSheet(
+            """
+            QPushButton {
+                background-color: #141720;
+                color: #64748b;
+                border: 1px solid #202432;
+                border-radius: 4px;
+                padding: 2px 8px;
+                font-size: 11px;
+                font-weight: 500;
+            }
+            QPushButton:hover {
+                background-color: #1e222d;
+                color: #94a3b8;
+                border-color: #2e3548;
+            }
+            QPushButton:pressed {
+                background-color: #0f1117;
+                color: #e2e8f0;
+            }
+            """
+        )
+        self.clear_btn.clicked.connect(self.clear)
+        header_bar.addWidget(self.clear_btn)
+
         layout.addLayout(header_bar)
 
         # 2. Main QTableWidget
@@ -262,3 +293,4 @@ class PcbTableWidget(QWidget):
         self._pid_to_row.clear()
         self._pcb_cache.clear()
         self._update_counter_badge()
+        self.sig_cleared.emit()

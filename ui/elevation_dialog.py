@@ -243,6 +243,12 @@ class ElevationDialog(QDialog):
         elif sc == SyscallType.PROC_KILL:
             pid = params.get("pid", "")
             return f"Terminate Process PID: <code>{pid}</code>"
+        elif sc == SyscallType.APP_OPEN:
+            app = params.get("app", "")
+            return f"Open Application: <code>{app}</code>"
+        elif sc == SyscallType.APP_CLOSE:
+            app = params.get("app", "")
+            return f"Close Application: <code>{app}</code>"
 
         return ""
 

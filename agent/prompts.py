@@ -130,37 +130,44 @@ You MUST compile a single-step FILE_READ plan to read "capabilities.txt". Do NOT
      * "app": string (the exact application name requested by the user, e.g. "zen", "vs code", "chrome", "notepad")
    - CRITICAL MANDATE: Whenever the user asks to open ANY application, you MUST ALWAYS emit an APP_OPEN step. NEVER refuse an application request or emit 0 steps saying an app is unknown or unapproved. The Micro-Supervisor kernel handles executable discovery, privilege elevation, and dynamic whitelisting automatically. Do not use PROC_SPAWN for desktop apps.
 
-8. APP_OPEN_URL (Ring 0 - Privileged):
+8. APP_CLOSE (Ring 0 - Privileged):
+   - Close running instances of ANY requested desktop application (e.g. "vlc", "notepad", "calculator", "chrome", "edge", "zen", "vs code", "spotify", etc.).
+   - Params:
+     * "app": string (the application name to close, e.g. "vlc", "notepad", "calculator", "edge")
+   - CRITICAL MANDATE: Whenever the user asks to close, exit, or terminate ANY desktop application or browser by name (e.g. "close vlc", "quit notepad", "close edge", "close ms edge", "close microsoft edge", "quit edge", "close chrome"), you MUST ALWAYS emit an APP_CLOSE step with the application name (e.g. "edge", "chrome", "notepad"). NEVER emit APP_CLOSE_TAB when the user requests closing an application or browser. The Micro-Supervisor kernel verifies the process exists before terminating it.
+
+9. APP_OPEN_URL (Ring 0 - Privileged):
    - Open a single validated URL in Microsoft Edge using a fixed browser launch pattern.
    - Params:
      * "url": string that starts with "http://", "https://", or "www."
    - This is only for opening a URL in Edge; no arbitrary browser command or shell injection is allowed.
 
-9. APP_CLOSE_TAB (Ring 0 - Privileged):
-   - Close a specific Edge tab/window previously opened by AgentOS.
+10. APP_CLOSE_TAB (Ring 0 - Privileged):
+   - Close a specific individual Edge tab or web page previously opened by AgentOS.
    - Params:
      * "url": string (optional) for a tracked URL you previously opened
      * "pid": integer (optional) for the tracked Edge process ID
-   - If neither parameter is supplied, close the most recently opened tracked Edge window.
+   - If neither parameter is supplied, close the most recently opened tracked Edge window/tab.
+   - CRITICAL RESTRICTION: APP_CLOSE_TAB is strictly for closing an individual web page, tab, or URL (e.g. "close tab", "close the edge tab", "close the current tab", "close url"). Do NOT use APP_CLOSE_TAB when the user asks to close, quit, or exit an application or browser (e.g. "close ms edge", "close edge", "exit edge"); for application closing, you MUST use APP_CLOSE.
 
-10. CALCULATE (Ring 3 - Safe):
+11. CALCULATE (Ring 3 - Safe):
    - Evaluate a simple arithmetic expression with numeric constants and +, -, *, /, //, %, ** and unary +/-.
    - Params:
      * "expression": string such as "2 + 3 * 4" or "(10 + 2) / 3"
    - This action is a safe calculator evaluation and must not invoke arbitrary shells or scripts.
 
-11. PROC_KILL (Ring 0 - Privileged):
+12. PROC_KILL (Ring 0 - Privileged):
    - Terminate an active process tree by PID.
    - Params:
      * "pid": integer (PID to kill)
 
-9. SYS_INFO (Ring 3 - Safe):
+13. SYS_INFO (Ring 3 - Safe):
    - Retrieve host CPU count, platform info, and memory diagnostics.
    - Params: {{}} (empty object)
 
 === PRIVILEGE RINGS ===
-- Ring 3 (Unprivileged / Safe): Read-only operations (FILE_SEARCH, FILE_READ, SYS_INFO). Executed automatically.
-- Ring 0 (Privileged / Destructive): File mutations and process/application execution (FILE_WRITE, FILE_MOVE, FILE_DELETE, PROC_SPAWN, APP_OPEN, PROC_KILL). Requires human elevation or supervisor confirmation.
+- Ring 3 (Unprivileged / Safe): Read-only operations (FILE_SEARCH, FILE_READ, SYS_INFO, CALCULATE). Executed automatically.
+- Ring 0 (Privileged / Destructive): File mutations and process/application execution (FILE_WRITE, FILE_MOVE, FILE_DELETE, PROC_SPAWN, APP_OPEN, APP_CLOSE, APP_OPEN_URL, APP_CLOSE_TAB, PROC_KILL). Requires human elevation or supervisor confirmation.
 
 === SECURITY MANDATES ===
 1. NEVER invoke arbitrary shell wrapper commands such as ["cmd.exe", "/c", ...], ["powershell", "-command", ...], or ["sh", "-c", ...].
@@ -170,6 +177,9 @@ You MUST compile a single-step FILE_READ plan to read "capabilities.txt". Do NOT
 5. Provide reasonable "estimated_duration" (seconds) for Shortest Job First scheduling (e.g. 0.1 for FILE_SEARCH, 1.0 for compilation, 2.0 for execution).
 6. Provide reasonable "priority" (1-100) for Priority scheduling.
 7. When compiling and executing Java files in subdirectories (such as "demo_assets/HelloWorld.java"), the execution step MUST include the classpath flag (e.g. ["java", "-cp", "demo_assets", "HelloWorld"]) so the JVM can locate the compiled bytecode.
+8. NEVER invoke Linux/Unix-specific process commands like "ps", "top", or "htop" because AgentOS runs on Windows and these binaries do not exist and will fail whitelist validation. When asked to list running processes or top CPU/RAM consuming applications:
+   - For overall hardware and CPU utilization, emit a single-step SYS_INFO plan.
+   - For listing top processes or filtering by CPU/RAM usage, compile a 2-step plan: (1) FILE_WRITE a Python script using psutil (for CPU, include a brief measurement delay such as time.sleep(0.5) so utilization is not 0.0%), and (2) PROC_SPAWN executing ["python", script_name].
 
 === OUTPUT FORMAT ===
 You MUST reply with ONLY a raw JSON object matching this schema. Do not enclose in conversational prose.
@@ -404,6 +414,91 @@ FEW_SHOT_EXAMPLES: list[dict[str, Any]] = [
             ],
         },
     },
+    {
+        "user_request": "close ms edge",
+        "plan": {
+            "plan_description": "Close Microsoft Edge desktop application",
+            "steps": [
+                {
+                    "step_id": 1,
+                    "syscall": "APP_CLOSE",
+                    "params": {"app": "edge"},
+                    "ring": 0,
+                    "description": "Close Microsoft Edge application",
+                    "estimated_duration": 0.5,
+                    "priority": 15,
+                    "dependencies": [],
+                }
+            ],
+        },
+    },
+    {
+        "user_request": "close the edge tab",
+        "plan": {
+            "plan_description": "Close the most recent Edge tab or window opened by AgentOS",
+            "steps": [
+                {
+                    "step_id": 1,
+                    "syscall": "APP_CLOSE_TAB",
+                    "params": {},
+                    "ring": 0,
+                    "description": "Close recent Edge tab",
+                    "estimated_duration": 0.5,
+                    "priority": 15,
+                    "dependencies": [],
+                }
+            ],
+        },
+    },
+    {
+        "user_request": "close vlc",
+        "plan": {
+            "plan_description": "Close VLC media player application",
+            "steps": [
+                {
+                    "step_id": 1,
+                    "syscall": "APP_CLOSE",
+                    "params": {"app": "vlc"},
+                    "ring": 0,
+                    "description": "Close VLC media player",
+                    "estimated_duration": 0.5,
+                    "priority": 15,
+                    "dependencies": [],
+                }
+            ],
+        },
+    },
+    {
+        "user_request": "list top 5 applications running in the computer which are consuming highest ram",
+        "plan": {
+            "plan_description": "Create and run a Python script to list top 5 RAM-consuming processes",
+            "steps": [
+                {
+                    "step_id": 1,
+                    "syscall": "FILE_WRITE",
+                    "params": {
+                        "path": "top_ram.py",
+                        "content": "import psutil\nprocs = [(p.info['name'], p.info['memory_info'].rss) for p in psutil.process_iter(['name', 'memory_info']) if p.info.get('memory_info')]\nprocs.sort(key=lambda x: x[1], reverse=True)\nfor name, mem in procs[:5]:\n    print(f\"{name}: {mem / (1024 * 1024):.2f} MB\")\n",
+                    },
+                    "ring": 0,
+                    "description": "Write Python script to inspect top memory-consuming processes",
+                    "estimated_duration": 0.2,
+                    "priority": 10,
+                    "dependencies": [],
+                },
+                {
+                    "step_id": 2,
+                    "syscall": "PROC_SPAWN",
+                    "params": {"cmd": ["python", "top_ram.py"], "timeout": 10},
+                    "ring": 0,
+                    "description": "Execute script to display top 5 RAM-consuming applications",
+                    "estimated_duration": 1.0,
+                    "priority": 20,
+                    "dependencies": [1],
+                },
+            ],
+        },
+    },
 ]
 
 
@@ -462,8 +557,8 @@ def build_reprompt_prompt(
         "INSTRUCTIONS FOR CORRECTION:\n"
         "1. Fix the error above and ensure all required fields ('plan_description', 'steps') are present.\n"
         "2. Ensure every step has 'step_id', 'syscall', and 'params'.\n"
-        "3. Ensure 'syscall' is one of: FILE_SEARCH, FILE_READ, FILE_WRITE, FILE_MOVE, FILE_DELETE, PROC_SPAWN, APP_OPEN, PROC_KILL, SYS_INFO.\n"
+        "3. Ensure 'syscall' is one of: FILE_SEARCH, FILE_READ, FILE_WRITE, FILE_MOVE, FILE_DELETE, PROC_SPAWN, APP_OPEN, APP_CLOSE, APP_OPEN_URL, APP_CLOSE_TAB, CALCULATE, PROC_KILL, SYS_INFO.\n"
         "4. In PROC_SPAWN, ensure 'cmd' is an array of strings (e.g. [\"python\", \"script.py\"]).\n"
-        "5. In APP_OPEN, 'app' must be a desktop application name (e.g. calculator, notepad, task_manager, edge, chrome).\n"
+        "5. In APP_OPEN and APP_CLOSE, 'app' must be a desktop application name (e.g. vlc, notepad, calculator, task_manager, edge, chrome).\n"
         "6. Respond with ONLY the corrected JSON object. Do NOT include markdown commentary."
     )

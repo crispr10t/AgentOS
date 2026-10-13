@@ -25,7 +25,6 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QSplitter,
-    QStatusBar,
     QVBoxLayout,
     QWidget,
 )
@@ -110,15 +109,17 @@ class SupervisorWorker(QThread):
         dispatcher: Optional[SyscallDispatcher] = None,
         scheduler: Optional[TaskScheduler] = None,
         pcb_table: Optional[PCBTable] = None,
+        starting_pid: int = 100,
         parent: Optional[QObject] = None,
     ):
         super().__init__(parent)
         self.prompt = prompt
         self.policy = policy
-        self.planner = planner or AgentPlanner()
-        self.dispatcher = dispatcher or SyscallDispatcher()
-        self.scheduler = scheduler or TaskScheduler(policy=policy)
-        self.pcb_table = pcb_table or PCBTable()
+        self.planner = planner if planner is not None else AgentPlanner()
+        self.dispatcher = dispatcher if dispatcher is not None else SyscallDispatcher()
+        self.scheduler = scheduler if scheduler is not None else TaskScheduler(policy=policy)
+        self.pcb_table = pcb_table if pcb_table is not None else PCBTable()
+        self.starting_pid = starting_pid
 
         self._cancel_requested = threading.Event()
         self._active_pcb: Optional[TaskPCB] = None
@@ -181,13 +182,14 @@ class SupervisorWorker(QThread):
             return
 
         # 2. Configure Scheduler Policy & Queue Tasks
+        self.scheduler.clear()
         self.scheduler.set_policy(self.policy)
         self.sig_status_updated.emit(f"Scheduling steps with {self.policy.value} policy...")
 
         ordered_steps = plan.get_topological_steps()
         pcbs: list[TaskPCB] = []
         for i, step in enumerate(ordered_steps):
-            pcb = step.to_pcb(pid=100 + i)
+            pcb = step.to_pcb(pid=self.starting_pid + i)
             pcbs.append(pcb)
             self.pcb_table.register(pcb)
             self.scheduler.enqueue(pcb)
@@ -195,7 +197,7 @@ class SupervisorWorker(QThread):
 
         # 3. Execution Loop
         self.sig_status_updated.emit("Executing system call DAG...")
-        step_map = {100 + i: step for i, step in enumerate(ordered_steps)}
+        step_map = {self.starting_pid + i: step for i, step in enumerate(ordered_steps)}
         overall_success = True
         executed_count = 0
 
@@ -215,6 +217,11 @@ class SupervisorWorker(QThread):
             step = step_map.get(pcb.pid)
             if step is None:
                 continue
+
+            # Update lifecycle to RUNNING and broadcast to live PCB table
+            if pcb.state == ProcessState.READY:
+                pcb.transition_to(ProcessState.RUNNING)
+                self.sig_pcb_updated.emit(pcb)
 
             executed_count += 1
             self.sig_status_updated.emit(
@@ -256,7 +263,7 @@ class SupervisorWorker(QThread):
                         f"[SECURITY] Elevation granted by user.\n", "audit"
                     )
                     # Dynamically add to whitelist so user is not prompted again
-                    if req.syscall == SyscallType.APP_OPEN:
+                    if req.syscall in (SyscallType.APP_OPEN, SyscallType.APP_CLOSE):
                         app_target = req.params.get("app", "")
                         self.dispatcher.privilege_gate.whitelist_app(app_target)
                         self.dispatcher.process_manager.whitelist_app(app_target)
@@ -296,6 +303,21 @@ class SupervisorWorker(QThread):
                     "success",
                 )
 
+        # Drain any remaining unexecuted tasks if stopped or failed so none linger in READY state
+        while not self.scheduler.is_empty():
+            rem_pcb = self.scheduler.next_task()
+            if rem_pcb is not None:
+                if rem_pcb.state in (ProcessState.NEW, ProcessState.READY):
+                    try:
+                        rem_pcb.transition_to(ProcessState.TERMINATED)
+                        rem_pcb.record_metrics(
+                            exit_code=1,
+                            error_msg="Cancelled or aborted due to step failure.",
+                        )
+                    except Exception:
+                        pass
+                self.sig_pcb_updated.emit(rem_pcb)
+
         self._active_pcb = None
         elapsed = time.time() - start_time
         summary = (
@@ -320,6 +342,7 @@ class MainWindow(QMainWindow):
         self.dispatcher = dispatcher or SyscallDispatcher()
         self.scheduler = TaskScheduler(policy=SchedulingPolicy.FCFS)
         self.pcb_table_data = PCBTable()
+        self._next_pid: int = 100
 
         self._worker: Optional[SupervisorWorker] = None
         self._telemetry_daemon = TelemetryDaemon(interval_sec=1.0)
@@ -375,24 +398,9 @@ class MainWindow(QMainWindow):
 
         # App Title Row
         app_title_row = QHBoxLayout()
-        logo_label = QLabel("⚡ <b>AgentOS</b>")
+        logo_label = QLabel("<b>AgentOS</b>")
         logo_label.setStyleSheet("font-size: 14px; font-weight: 600; color: #f8fafc;")
         app_title_row.addWidget(logo_label)
-
-        version_badge = QLabel("v0.5.0")
-        version_badge.setStyleSheet(
-            """
-            background-color: #1c202d;
-            color: #64748b;
-            font-size: 10px;
-            font-weight: 600;
-            padding: 2px 7px;
-            border-radius: 9999px;
-            border: 1px solid #262c3e;
-            """
-        )
-        app_title_row.addWidget(version_badge)
-
         app_title_row.addStretch()
 
         policy_label = QLabel("Policy:")
@@ -552,6 +560,7 @@ class MainWindow(QMainWindow):
         splitter = QSplitter(Qt.Orientation.Horizontal)
 
         self.pcb_table = PcbTableWidget()
+        self.pcb_table.sig_cleared.connect(self._on_pcb_registry_cleared)
         splitter.addWidget(self.pcb_table)
 
         self.terminal = TerminalWidget()
@@ -564,13 +573,9 @@ class MainWindow(QMainWindow):
         self.telemetry_widget = TelemetryWidget()
         main_layout.addWidget(self.telemetry_widget)
 
-        # 4. Status Bar
-        self.status_bar = QStatusBar()
-        self.status_bar.setStyleSheet(
-            "QStatusBar { color: #64748b; font-size: 11px; background-color: #090a0f; border-top: 1px solid #1a1d26; padding: 2px 8px; }"
-        )
-        self.setStatusBar(self.status_bar)
-        self.status_bar.showMessage("Ready. Enter an instruction to compile and execute.")
+        # Status Bar disabled for clean layout
+        self.setStatusBar(None)
+        self.status_bar = None
 
         # Welcome message in terminal
         self.terminal.append_line("=== AgentOS Micro-Supervisor Shell Initialized ===", "audit")
@@ -609,10 +614,8 @@ class MainWindow(QMainWindow):
             res: SyscallResult = self.dispatcher.undo_last_action()
             if res.success:
                 self.terminal.append_line(f"\n[UNDO] {res.output}", "audit")
-                self.status_bar.showMessage(f"Undo succeeded: {res.output}")
             else:
                 self.terminal.append_line(f"\n[UNDO] {res.error}", "warning")
-                self.status_bar.showMessage(f"Undo: {res.error}")
         finally:
             has_undo = False
             try:
@@ -622,7 +625,17 @@ class MainWindow(QMainWindow):
             except Exception:
                 has_undo = False
             self.undo_btn.setVisible(has_undo)
-            self.undo_btn.setEnabled(has_undo)
+            self.undo_btn.setEnabled(True)
+
+    def _on_pcb_registry_cleared(self) -> None:
+        """Resets kernel process table, scheduler, and PID allocator when user clears registry."""
+        self.pcb_table_data.clear()
+        self.scheduler.clear()
+        self._next_pid = 100
+
+    def _on_plan_compiled(self, plan: SyscallPlan) -> None:
+        """Advances PID sequence allocator by the number of steps in the compiled plan."""
+        self._next_pid += len(plan.steps)
 
     def on_execute_clicked(self) -> None:
         """Handles Execution trigger from button or Return key."""
@@ -634,7 +647,7 @@ class MainWindow(QMainWindow):
             return
 
         policy_str = self.policy_combo.currentText()
-        policy = SchedulingPolicy(policy_str)
+        policy = TaskScheduler._normalize_policy(policy_str)
 
         # Update UI state - show Stop, hide Execute & Undo
         self.execute_btn.setEnabled(False)
@@ -645,7 +658,6 @@ class MainWindow(QMainWindow):
         self.undo_btn.setEnabled(False)
         self.prompt_input.setEnabled(False)
         self.policy_combo.setEnabled(False)
-        self.status_bar.showMessage("Initializing supervisor worker...")
 
         # Spawn Worker Thread
         self._worker = SupervisorWorker(
@@ -655,13 +667,14 @@ class MainWindow(QMainWindow):
             dispatcher=self.dispatcher,
             scheduler=self.scheduler,
             pcb_table=self.pcb_table_data,
+            starting_pid=self._next_pid,
             parent=self,
         )
 
+        self._worker.sig_plan_compiled.connect(self._on_plan_compiled)
         self._worker.sig_pcb_updated.connect(self.pcb_table.update_pcb)
         self._worker.sig_console_stream.connect(self.terminal.append_stream)
         self._worker.sig_privilege_request.connect(self._handle_elevation_request)
-        self._worker.sig_status_updated.connect(self.status_bar.showMessage)
         self._worker.sig_execution_finished.connect(self._on_execution_finished)
 
         self._worker.start()
@@ -669,7 +682,6 @@ class MainWindow(QMainWindow):
     def on_stop_clicked(self) -> None:
         """Handles Stop / Abort button click."""
         if self._worker is not None and self._worker.isRunning():
-            self.status_bar.showMessage("Aborting execution...")
             self._worker.cancel()
             self.stop_btn.setEnabled(False)
 
@@ -687,7 +699,6 @@ class MainWindow(QMainWindow):
         self.stop_btn.setEnabled(False)
         self.prompt_input.setEnabled(True)
         self.policy_combo.setEnabled(True)
-        self.status_bar.showMessage(f"Status: {message}")
         self._worker = None
 
         # Reveal undo button only if an undoable action was recorded in journal

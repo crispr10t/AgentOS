@@ -123,12 +123,8 @@ class TelemetryWidget(QWidget):
 
         main_layout.addLayout(ram_box)
 
-        # 4. Status indicator badge
-        self.pulse_label = QLabel("● Live")
-        self.pulse_label.setStyleSheet(
-            "font-size: 10px; color: #34d399; font-weight: 600; background-color: #06281e; border: 1px solid #064e3b; padding: 2px 7px; border-radius: 9999px;"
-        )
-        main_layout.addWidget(self.pulse_label)
+        # Status indicator badge removed for clean telemetry bar
+        self.pulse_label: Optional[QLabel] = None
 
     def _progress_bar_qss(self, fill_color: str) -> str:
         """Generates stylesheet for styled rounded progress bars."""

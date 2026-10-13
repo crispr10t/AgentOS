@@ -278,6 +278,10 @@ class FileEngine:
                 duration_sec=time.time() - start_time,
             )
 
+        # Auto-unescape literal escape sequences if content was serialized with escaped newlines
+        if isinstance(content, str) and "\\n" in content and "\n" not in content:
+            content = content.replace("\\r\\n", "\n").replace("\\n", "\n").replace("\\t", "\t")
+
         try:
             safe_path.parent.mkdir(parents=True, exist_ok=True)
             is_new = not safe_path.exists()
@@ -525,7 +529,7 @@ class FileEngine:
                 "python_version": platform.python_version(),
                 "cpu_count_logical": psutil.cpu_count(logical=True),
                 "cpu_count_physical": psutil.cpu_count(logical=False),
-                "cpu_percent": psutil.cpu_percent(interval=None),
+                "cpu_percent": psutil.cpu_percent(interval=0.1),
                 "memory_total_mb": round(vmem.total / (1024 * 1024), 2),
                 "memory_available_mb": round(vmem.available / (1024 * 1024), 2),
                 "memory_used_percent": vmem.percent,

@@ -18,6 +18,7 @@ import sys
 import threading
 import time
 from typing import Any, Optional
+from urllib.parse import parse_qs, urlparse
 
 from dotenv import load_dotenv
 import psutil
@@ -303,6 +304,9 @@ def resolve_application_executable(app_name: str) -> Optional[str]:
         "bravebrowser": "brave.exe",
         "edge": "msedge.exe",
         "msedge": "msedge.exe",
+        "ms_edge": "msedge.exe",
+        "microsoft_edge": "msedge.exe",
+        "microsoftedge": "msedge.exe",
         "firefox": "firefox.exe",
         "mozilla_firefox": "firefox.exe",
         "calculator": "calc.exe",
@@ -780,6 +784,195 @@ class ProcessManager:
             duration_sec=time.time() - start_time,
         )
 
+    def close_application(
+        self,
+        app_name: str,
+        request: Optional[SyscallRequest] = None,
+    ) -> SyscallResult:
+        """Closes all active running process instances of a target desktop application.
+
+        Verifies that the application process exists and is currently running before
+        terminating. If no matching running process is found, fails gracefully.
+
+        Args:
+            app_name: Name or alias of the desktop application (e.g. 'vlc', 'notepad').
+            request: Optional parent SyscallRequest context.
+
+        Returns:
+            SyscallResult indicating success with closed PIDs or failure if not running.
+        """
+        req = request or SyscallRequest(
+            syscall=SyscallType.APP_CLOSE,
+            params={"app": app_name},
+            ring=PrivilegeRing.RING_0,
+        )
+        start_time = time.time()
+
+        if not app_name or not str(app_name).strip():
+            return SyscallResult.fail(
+                request=req,
+                error="Application name cannot be empty.",
+                exit_code=1,
+                duration_sec=time.time() - start_time,
+            )
+
+        app_clean = str(app_name).strip()
+        app_key = app_clean.lower().replace(" ", "_")
+        app_key_nodash = app_key.replace("-", "")
+        app_key_compact = (
+            app_clean.lower()
+            .replace(" ", "")
+            .replace("-", "")
+            .replace("_", "")
+        )
+
+        prohibited_shells = {
+            "cmd", "cmd.exe", "powershell", "powershell.exe",
+            "pwsh", "pwsh.exe", "bash", "bash.exe", "sh", "sh.exe", "wscript", "cscript",
+        }
+
+        # Block path traversal, raw paths, or prohibited shell commands
+        if any(sep in app_name for sep in ("/", "\\", "..")) or app_key in prohibited_shells:
+            return SyscallResult.fail(
+                request=req,
+                error=(
+                    f"Application '{app_name}' is not permitted. "
+                    f"Only desktop GUI applications can be managed."
+                ),
+                exit_code=126,
+                duration_sec=time.time() - start_time,
+            )
+
+        # Build candidate process names and target stems
+        candidate_names: set[str] = {
+            app_clean.lower(),
+            app_key,
+            app_key_nodash,
+            app_key_compact,
+        }
+        if not app_clean.lower().endswith(".exe"):
+            candidate_names.add(f"{app_clean.lower()}.exe")
+            candidate_names.add(f"{app_key}.exe")
+            candidate_names.add(f"{app_key_nodash}.exe")
+            candidate_names.add(f"{app_key_compact}.exe")
+
+        alias_map = {
+            "vscode": "code.exe",
+            "vs_code": "code.exe",
+            "code": "code.exe",
+            "google_chrome": "chrome.exe",
+            "chrome": "chrome.exe",
+            "googlechrome": "chrome.exe",
+            "brave": "brave.exe",
+            "brave_browser": "brave.exe",
+            "bravebrowser": "brave.exe",
+            "edge": "msedge.exe",
+            "msedge": "msedge.exe",
+            "ms_edge": "msedge.exe",
+            "microsoft_edge": "msedge.exe",
+            "microsoftedge": "msedge.exe",
+            "firefox": "firefox.exe",
+            "mozilla_firefox": "firefox.exe",
+            "calculator": "calc.exe",
+            "calc": "calc.exe",
+            "notepad": "notepad.exe",
+            "task_manager": "taskmgr.exe",
+            "taskmgr": "taskmgr.exe",
+            "paint": "mspaint.exe",
+            "mspaint": "mspaint.exe",
+            "explorer": "explorer.exe",
+            "vlc": "vlc.exe",
+            "vlc_media_player": "vlc.exe",
+            "spotify": "spotify.exe",
+            "discord": "discord.exe",
+            "steam": "steam.exe",
+            "terminal": "wt.exe",
+            "windows_terminal": "wt.exe",
+        }
+
+        for k in (app_key, app_key_nodash, app_key_compact):
+            if k in alias_map:
+                target_exe = alias_map[k]
+                candidate_names.add(target_exe.lower())
+                candidate_names.add(Path(target_exe).stem.lower())
+
+        resolved_path = resolve_application_executable(app_name)
+        if resolved_path:
+            p_name = Path(resolved_path).name.lower()
+            p_stem = Path(resolved_path).stem.lower()
+            candidate_names.add(p_name)
+            candidate_names.add(p_stem)
+
+        # 1. Scan for matching active host processes
+        my_pid = os.getpid()
+        matched_procs: list[tuple[int, str]] = []
+
+        try:
+            for proc in psutil.process_iter(["pid", "name"]):
+                try:
+                    pid = proc.info["pid"]
+                    if pid == my_pid:
+                        continue
+                    pname = (proc.info.get("name") or "").lower()
+                    pstem = Path(pname).stem.lower()
+
+                    if pname in candidate_names or pstem in candidate_names:
+                        matched_procs.append((pid, pname))
+                    elif app_key in pname or app_clean.lower() in pname:
+                        if len(app_clean) >= 3:
+                            matched_procs.append((pid, pname))
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    continue
+        except Exception as exc:
+            return SyscallResult.fail(
+                request=req,
+                error=f"Error inspecting system process registry: {exc}",
+                exit_code=1,
+                duration_sec=time.time() - start_time,
+            )
+
+        # Deduplicate by PID
+        unique_matches: dict[int, str] = {pid: name for pid, name in matched_procs}
+
+        # 2. Strict Pre-existence Check: Must be currently running!
+        if not unique_matches:
+            return SyscallResult.fail(
+                request=req,
+                error=f"Application '{app_name}' is not currently running. Cannot close a non-existent process.",
+                exit_code=1,
+                duration_sec=time.time() - start_time,
+            )
+
+        # 3. Terminate matched process trees
+        closed_pids: list[int] = []
+        for pid in list(unique_matches.keys()):
+            try:
+                if psutil.pid_exists(pid):
+                    self.kill_process_tree(pid)
+                    closed_pids.append(pid)
+            except Exception:
+                pass
+
+        # Cleanup tracked Edge windows if any matched PIDs were tracked
+        if hasattr(self, "_edge_windows") and self._edge_windows:
+            self._edge_windows = [
+                entry for entry in self._edge_windows if entry.get("pid") not in closed_pids
+            ]
+
+        # Brief pause to verify termination
+        time.sleep(0.1)
+
+        pids_formatted = ", ".join(f"PID {p}" for p in closed_pids)
+        return SyscallResult.ok(
+            request=req,
+            output=f"Closed {app_name} ({pids_formatted})." if closed_pids else f"Closed {app_name}.",
+            data={"app": app_key, "pids": closed_pids, "closed": True},
+            duration_sec=time.time() - start_time,
+        )
+
+    # Alias for convenience and backward compatibility
+    close_app = close_application
+
     def open_edge_url(
         self,
         url: str,
@@ -851,7 +1044,11 @@ class ProcessManager:
                 duration_sec=time.time() - start_time,
             )
 
-        self._edge_windows.append({"pid": process.pid, "url": normalized_url})
+        self._edge_windows.append({
+            "pid": process.pid,
+            "url": normalized_url,
+            "opened_at": time.time(),
+        })
         return SyscallResult.ok(
             request=req,
             output=f"Opened Edge to {normalized_url} (PID {process.pid}).",
@@ -859,13 +1056,136 @@ class ProcessManager:
             duration_sec=time.time() - start_time,
         )
 
+    @staticmethod
+    def _extract_url_keywords(url: str) -> list[str]:
+        """Extract meaningful domain and query keywords from a URL to match window titles."""
+        keywords: list[str] = []
+        try:
+            parsed = urlparse(url)
+            host = parsed.netloc.lower()
+            parts = [
+                p for p in host.split(".")
+                if p not in ("www", "com", "org", "net", "io", "co", "in", "edu", "gov")
+            ]
+            keywords.extend(parts)
+            if parsed.query:
+                qs = parse_qs(parsed.query)
+                for vals in qs.values():
+                    for v in vals:
+                        clean = v.strip().lower()
+                        if len(clean) >= 2:
+                            keywords.append(clean)
+            if parsed.path:
+                path_parts = [p.lower() for p in parsed.path.split("/") if len(p) >= 3]
+                keywords.extend(path_parts)
+        except Exception:
+            pass
+        return [k for k in keywords if len(k) >= 2]
+
+    def _close_edge_window(
+        self,
+        url: Optional[str] = None,
+        pid: Optional[int] = None,
+    ) -> bool:
+        """Gracefully closes an active Microsoft Edge window using Win32 WM_CLOSE."""
+        if os.name != "nt":
+            return False
+
+        try:
+            import ctypes
+            from ctypes import wintypes
+            user32 = ctypes.windll.user32
+        except Exception:
+            return False
+
+        edge_windows: list[dict[str, Any]] = []
+
+        def enum_callback(hwnd, lparam):
+            try:
+                if user32.IsWindowVisible(hwnd):
+                    length = user32.GetWindowTextLengthW(hwnd)
+                    if length > 0:
+                        buf = ctypes.create_unicode_buffer(length + 1)
+                        user32.GetWindowTextW(hwnd, buf, length + 1)
+                        title = buf.value
+                        proc_id = wintypes.DWORD()
+                        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(proc_id))
+                        win_pid = proc_id.value
+                        if win_pid:
+                            try:
+                                proc = psutil.Process(win_pid)
+                                if "msedge" in (proc.name() or "").lower():
+                                    edge_windows.append({
+                                        "hwnd": hwnd,
+                                        "pid": win_pid,
+                                        "title": title,
+                                    })
+                            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                                pass
+            except Exception:
+                pass
+            return True
+
+        try:
+            WNDENUMPROC = ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
+            cb = WNDENUMPROC(enum_callback)
+            user32.EnumWindows(cb, 0)
+        except Exception:
+            return False
+
+        if not edge_windows:
+            return False
+
+        # 1. Match by URL keywords if provided
+        target_win = None
+        if url:
+            keywords = self._extract_url_keywords(url)
+            for kw in keywords:
+                for win in edge_windows:
+                    if kw in win["title"].lower():
+                        target_win = win
+                        break
+                if target_win:
+                    break
+
+        # 2. Match by PID if provided
+        if target_win is None and pid is not None:
+            for win in edge_windows:
+                if win["pid"] == int(pid):
+                    target_win = win
+                    break
+
+        # 3. Fallback: match any window whose title indicates an Edge browser window
+        if target_win is None:
+            for win in edge_windows:
+                t_lower = win["title"].lower()
+                if "edge" in t_lower or "bing" in t_lower:
+                    target_win = win
+                    break
+
+        # 4. If still none, pick the most recent Edge window
+        if target_win is None:
+            target_win = edge_windows[0]
+
+        target_hwnd = target_win["hwnd"]
+        WM_CLOSE = 0x0010
+        try:
+            user32.PostMessageW(target_hwnd, WM_CLOSE, 0, 0)
+            time.sleep(0.2)
+            if not user32.IsWindow(target_hwnd) or not user32.IsWindowVisible(target_hwnd):
+                return True
+            time.sleep(0.3)
+            return not user32.IsWindow(target_hwnd) or not user32.IsWindowVisible(target_hwnd)
+        except Exception:
+            return False
+
     def close_edge_tab(
         self,
         url: Optional[str] = None,
         pid: Optional[int] = None,
         request: Optional[SyscallRequest] = None,
     ) -> SyscallResult:
-        """Close the most recently opened Edge tab/window tracked by AgentOS."""
+        """Close an Edge tab/window tracked by AgentOS or active on the host."""
         req = request or SyscallRequest(
             syscall=SyscallType.APP_CLOSE_TAB,
             params={"url": url, "pid": pid},
@@ -873,58 +1193,112 @@ class ProcessManager:
         )
         start_time = time.time()
 
-        if not self._edge_windows:
-            return SyscallResult.fail(
-                request=req,
-                error="No Edge tabs/windows have been opened by AgentOS that can be closed.",
-                exit_code=1,
-                duration_sec=time.time() - start_time,
-            )
-
         target = None
         if pid is not None:
             for entry in self._edge_windows:
-                if entry["pid"] == int(pid):
+                if entry.get("pid") == int(pid):
                     target = entry
                     break
         elif url is not None:
             normalized = self._validate_url(url)
             for entry in self._edge_windows:
-                if entry["url"] == normalized:
+                if entry.get("url") == normalized:
                     target = entry
                     break
-        else:
-            target = self._edge_windows.pop()
+        elif self._edge_windows:
+            target = self._edge_windows[-1]
 
+        # Case 1: Target not found in AgentOS tracking (_edge_windows is empty or unmatched)
         if target is None:
+            edge_procs = [
+                p for p in psutil.process_iter(["pid", "name"])
+                if "msedge" in (p.info.get("name") or "").lower()
+            ]
+            if not edge_procs:
+                return SyscallResult.fail(
+                    request=req,
+                    error="No active Microsoft Edge windows or tabs found to close.",
+                    exit_code=1,
+                    duration_sec=time.time() - start_time,
+                )
+
+            # Edge is active on host: attempt closing active window via Win32 WM_CLOSE
+            if self._close_edge_window(url=url, pid=pid):
+                return SyscallResult.ok(
+                    request=req,
+                    output="Closed active Microsoft Edge window.",
+                    data={"closed": True, "method": "wm_close"},
+                    duration_sec=time.time() - start_time,
+                )
+
+            # Fallback: close running Edge application instance
+            close_app_res = self.close_app("edge", request=req)
+            if close_app_res.success:
+                return SyscallResult.ok(
+                    request=req,
+                    output="Closed Microsoft Edge application instance.",
+                    data={"closed": True, "method": "process_tree"},
+                    duration_sec=time.time() - start_time,
+                )
+
             return SyscallResult.fail(
                 request=req,
-                error="The requested Edge tab/window was not found in AgentOS tracking.",
+                error="Could not close active Microsoft Edge window or process.",
                 exit_code=1,
                 duration_sec=time.time() - start_time,
             )
 
-        if pid is not None and target["pid"] == int(pid):
-            self._edge_windows = [entry for entry in self._edge_windows if entry["pid"] != int(pid)]
-        elif url is not None:
-            self._edge_windows = [entry for entry in self._edge_windows if entry["url"] != target["url"]]
-        else:
-            if self._edge_windows and self._edge_windows[-1]["pid"] == target["pid"]:
-                self._edge_windows.pop()
+        # Case 2: Target found in AgentOS tracking
+        target_url = target.get("url", "")
+        target_pid = target.get("pid")
+        closed = False
 
-        target_pid = int(target["pid"])
-        try:
-            if psutil.pid_exists(target_pid):
-                proc = psutil.Process(target_pid)
-                proc.terminate()
-                proc.wait(timeout=3)
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
-            pass
+        # 1. Attempt graceful Win32 WM_CLOSE by matching window title / URL / PID
+        if self._close_edge_window(url=target_url, pid=target_pid):
+            closed = True
 
-        return SyscallResult.ok(
+        # 2. If window close did not succeed, check if target_pid is alive in OS
+        if not closed and target_pid is not None:
+            try:
+                target_pid_int = int(target_pid)
+                if psutil.pid_exists(target_pid_int):
+                    if self.kill_process_tree(target_pid_int):
+                        closed = True
+            except Exception:
+                pass
+
+        # 3. If target_pid already exited, check if other running Edge windows can be closed
+        if not closed:
+            edge_procs = [
+                p for p in psutil.process_iter(["pid", "name"])
+                if "msedge" in (p.info.get("name") or "").lower()
+            ]
+            if edge_procs and self._close_edge_window():
+                closed = True
+
+        # 4. If closed successfully, remove from tracking state
+        if closed:
+            self._edge_windows = [
+                entry for entry in self._edge_windows
+                if entry is not target and (target_pid is None or entry.get("pid") != target_pid)
+            ]
+            msg = (
+                f"Closed Edge tab/window for {target_url} (PID {target_pid})."
+                if target_pid
+                else f"Closed Edge tab/window for {target_url}."
+            )
+            return SyscallResult.ok(
+                request=req,
+                output=msg,
+                data={"pid": target_pid, "url": target_url, "closed": True},
+                duration_sec=time.time() - start_time,
+            )
+
+        # 5. Never report fake success if closing failed
+        return SyscallResult.fail(
             request=req,
-            output=f"Closed Edge tab/window for {target['url']} (PID {target_pid}).",
-            data={"pid": target_pid, "url": target["url"]},
+            error=f"Could not close Edge window for '{target_url}'. No matching active window or process found.",
+            exit_code=1,
             duration_sec=time.time() - start_time,
         )
 
@@ -1172,6 +1546,21 @@ class ProcessManager:
         if sys.platform == "win32":
             if (candidate.endswith(".bat") or candidate.endswith(".cmd")) and shutil.which(tokens[0]) is None:
                 tokens = ["cmd.exe", "/c"] + tokens
+
+        # 4. If target Python script does not exist in exec_cwd, but exists in SANDBOX_ROOT, redirect exec_cwd
+        s_root_env = os.getenv("SANDBOX_ROOT", "./sandbox_workspace")
+        target_script_cand = None
+        if len(tokens) > 1 and tokens[1].lower().endswith(".py"):
+            target_script_cand = tokens[1]
+        elif len(tokens) > 0 and tokens[0].lower().endswith(".py"):
+            target_script_cand = tokens[0]
+
+        if target_script_cand:
+            cwd_cand = Path(exec_cwd or ".")
+            if not (cwd_cand / target_script_cand).exists():
+                sandbox_cand = Path(s_root_env)
+                if (sandbox_cand / target_script_cand).exists():
+                    exec_cwd = str(sandbox_cand.resolve())
 
         try:
             proc = subprocess.Popen(

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from enum import Enum
 import os
+import re
 import time
 from typing import Any, Callable, Optional
 
@@ -39,7 +40,7 @@ class LLMConfig(BaseModel):
     groq_model: str = "llama-3.3-70b-versatile"
     groq_base_url: str = "https://api.groq.com/openai/v1"
     gemini_api_key: Optional[str] = None
-    gemini_model: str = "gemini-2.5-flash"
+    gemini_model: str = "gemini-3.8-flash"
     openai_api_key: Optional[str] = None
     openai_model: str = "gpt-4o-mini"
     openai_base_url: Optional[str] = None
@@ -58,18 +59,26 @@ class LLMConfig(BaseModel):
         except ValueError:
             provider = LLMProvider.GROQ
 
+        def _clean_env(key: str, default: Optional[str] = None) -> Optional[str]:
+            val = os.getenv(key)
+            if val is not None:
+                val = val.strip()
+                if val:
+                    return val
+            return default
+
         return cls(
             provider=provider,
-            groq_api_key=os.getenv("GROQ_API_KEY") or None,
-            groq_model=os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"),
-            groq_base_url=os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1"),
-            gemini_api_key=os.getenv("GEMINI_API_KEY") or None,
-            gemini_model=os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),
-            openai_api_key=os.getenv("OPENAI_API_KEY") or None,
-            openai_model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
-            openai_base_url=os.getenv("OPENAI_BASE_URL") or None,
-            ollama_host=os.getenv("OLLAMA_HOST", "http://localhost:11434").rstrip("/"),
-            ollama_model=os.getenv("OLLAMA_MODEL", "llama3.2:3b"),
+            groq_api_key=_clean_env("GROQ_API_KEY"),
+            groq_model=_clean_env("GROQ_MODEL", "llama-3.3-70b-versatile") or "llama-3.3-70b-versatile",
+            groq_base_url=_clean_env("GROQ_BASE_URL", "https://api.groq.com/openai/v1") or "https://api.groq.com/openai/v1",
+            gemini_api_key=_clean_env("GEMINI_API_KEY"),
+            gemini_model=_clean_env("GEMINI_MODEL", "gemini-3.8-flash") or "gemini-3.8-flash",
+            openai_api_key=_clean_env("OPENAI_API_KEY"),
+            openai_model=_clean_env("OPENAI_MODEL", "gpt-4o-mini") or "gpt-4o-mini",
+            openai_base_url=_clean_env("OPENAI_BASE_URL"),
+            ollama_host=(_clean_env("OLLAMA_HOST", "http://localhost:11434") or "http://localhost:11434").rstrip("/"),
+            ollama_model=_clean_env("OLLAMA_MODEL", "llama3.2:3b") or "llama3.2:3b",
             timeout_sec=float(os.getenv("LLM_TIMEOUT_SECONDS", "30.0")),
             temperature=float(os.getenv("LLM_TEMPERATURE", "0.1")),
             auto_fallback=os.getenv("LLM_AUTO_FALLBACK", "true").lower() in ("1", "true", "yes"),
@@ -236,6 +245,18 @@ class LLMClient:
             duration_sec=duration,
         )
 
+    @staticmethod
+    def _extract_retry_delay(exc: Exception, default: float = 1.0) -> float:
+        """Extracts requested retry delay from exception message, with safe bounds."""
+        msg = str(exc)
+        match_ms = re.search(r"try again in (\d+(?:\.\d+)?)\s*ms", msg, re.IGNORECASE)
+        if match_ms:
+            return max(0.1, (float(match_ms.group(1)) + 50.0) / 1000.0)
+        match_s = re.search(r"try again in (\d+(?:\.\d+)?)\s*s", msg, re.IGNORECASE)
+        if match_s:
+            return max(0.2, float(match_s.group(1)) + 0.1)
+        return default
+
     def _call_groq(
         self,
         prompt: str,
@@ -243,7 +264,7 @@ class LLMClient:
         format_json: bool,
         start_time: float,
     ) -> LLMResponse:
-        """Invokes Groq Cloud API using official OpenAI-compatible endpoint."""
+        """Invokes Groq Cloud API using official OpenAI-compatible endpoint with transient rate-limit retry."""
         if not self.config.groq_api_key:
             raise ValueError("GROQ_API_KEY is not configured.")
 
@@ -267,7 +288,26 @@ class LLMClient:
         if format_json:
             kwargs["response_format"] = {"type": "json_object"}
 
-        chat_completion = client.chat.completions.create(**kwargs)
+        max_retries = 3
+        chat_completion = None
+        for attempt in range(max_retries):
+            try:
+                chat_completion = client.chat.completions.create(**kwargs)
+                break
+            except Exception as exc:
+                is_rate_limit = (
+                    "RateLimitError" in type(exc).__name__
+                    or getattr(exc, "status_code", None) == 429
+                    or "rate_limit" in str(exc).lower()
+                    or "429" in str(exc)
+                )
+                if is_rate_limit and attempt < max_retries - 1:
+                    delay = self._extract_retry_delay(exc)
+                    if delay <= 5.0:
+                        time.sleep(delay)
+                        continue
+                raise exc
+
         content = chat_completion.choices[0].message.content or ""
         duration = time.time() - start_time
 
@@ -326,6 +366,9 @@ class LLMClient:
         if not self.config.gemini_api_key:
             raise ValueError("GEMINI_API_KEY is not configured.")
 
+        # Normalize model name by stripping any redundant 'models/' prefix
+        gemini_model = self.config.gemini_model.strip().removeprefix("models/")
+
         # Attempt SDK invocation via google-genai
         try:
             from google import genai
@@ -348,7 +391,7 @@ class LLMClient:
 
             gen_config = types.GenerateContentConfig(**config_args)
             response = client.models.generate_content(
-                model=self.config.gemini_model,
+                model=gemini_model,
                 contents=prompt,
                 config=gen_config,
             )
@@ -357,12 +400,12 @@ class LLMClient:
             return LLMResponse(
                 content=content,
                 provider="gemini",
-                model=self.config.gemini_model,
+                model=gemini_model,
                 duration_sec=duration,
             )
         except ImportError:
             # Fallback to direct HTTP request if SDK is unavailable
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.config.gemini_model}:generateContent?key={self.config.gemini_api_key}"
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{gemini_model}:generateContent?key={self.config.gemini_api_key}"
             contents_payload = [{"parts": [{"text": prompt}]}]
             body: dict[str, Any] = {"contents": contents_payload}
             if system:
@@ -381,7 +424,7 @@ class LLMClient:
             return LLMResponse(
                 content=text,
                 provider="gemini",
-                model=self.config.gemini_model,
+                model=gemini_model,
                 duration_sec=duration,
             )
 

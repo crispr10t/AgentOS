@@ -28,6 +28,7 @@ class SyscallType(str, Enum):
     PROC_SPAWN = "PROC_SPAWN"
     PROC_KILL = "PROC_KILL"
     APP_OPEN = "APP_OPEN"
+    APP_CLOSE = "APP_CLOSE"
     APP_OPEN_URL = "APP_OPEN_URL"
     APP_CLOSE_TAB = "APP_CLOSE_TAB"
     CALCULATE = "CALCULATE"
@@ -44,6 +45,7 @@ DEFAULT_SYSCALL_RINGS: dict[SyscallType, PrivilegeRing] = {
     SyscallType.PROC_SPAWN: PrivilegeRing.RING_0,
     SyscallType.PROC_KILL: PrivilegeRing.RING_0,
     SyscallType.APP_OPEN: PrivilegeRing.RING_0,
+    SyscallType.APP_CLOSE: PrivilegeRing.RING_0,
     SyscallType.APP_OPEN_URL: PrivilegeRing.RING_0,
     SyscallType.APP_CLOSE_TAB: PrivilegeRing.RING_0,
     SyscallType.CALCULATE: PrivilegeRing.RING_3,
@@ -245,6 +247,19 @@ class SyscallDispatcher:
                         app_name=app_name,
                         request=request,
                     )
+            elif request.syscall == SyscallType.APP_CLOSE:
+                app_name = params.get("app")
+                if not app_name:
+                    result = SyscallResult.fail(
+                        request=request,
+                        error="Missing required parameter 'app'.",
+                        exit_code=1,
+                    )
+                else:
+                    result = self.process_manager.close_application(
+                        app_name=app_name,
+                        request=request,
+                    )
             elif request.syscall == SyscallType.APP_OPEN_URL:
                 url = params.get("url")
                 if not url:
@@ -287,27 +302,31 @@ class SyscallDispatcher:
                     )
                 else:
                     exec_cwd = params.get("cwd")
-                    if exec_cwd is None:
-                        # Determine working directory: prefer sandbox_root if target script is in sandbox
-                        target_script = ""
-                        if isinstance(cmd, list) and len(cmd) > 1 and not str(cmd[1]).startswith("-"):
-                            target_script = str(cmd[1])
-                        elif isinstance(cmd, list) and len(cmd) > 0 and not str(cmd[0]).startswith("-"):
-                            target_script = str(cmd[0])
-                        elif isinstance(cmd, str):
-                            tokens_tmp = cmd.split()
-                            if len(tokens_tmp) > 1 and not tokens_tmp[1].startswith("-"):
-                                target_script = tokens_tmp[1]
-                            elif len(tokens_tmp) > 0 and not tokens_tmp[0].startswith("-"):
-                                target_script = tokens_tmp[0]
+                    s_root = getattr(self.file_engine, "sandbox_root", None)
 
-                        s_root = getattr(self.file_engine, "sandbox_root", None)
-                        if target_script and s_root and (Path(s_root) / target_script).exists():
+                    # Determine target script from command tokens
+                    target_script = ""
+                    if isinstance(cmd, list) and len(cmd) > 1 and not str(cmd[1]).startswith("-"):
+                        target_script = str(cmd[1])
+                    elif isinstance(cmd, list) and len(cmd) > 0 and not str(cmd[0]).startswith("-"):
+                        target_script = str(cmd[0])
+                    elif isinstance(cmd, str):
+                        tokens_tmp = cmd.split()
+                        if len(tokens_tmp) > 1 and not tokens_tmp[1].startswith("-"):
+                            target_script = tokens_tmp[1]
+                        elif len(tokens_tmp) > 0 and not tokens_tmp[0].startswith("-"):
+                            target_script = tokens_tmp[0]
+
+                    # Determine working directory: prefer specified cwd if script exists there, otherwise check sandbox
+                    if target_script and s_root:
+                        script_in_cwd = (Path(exec_cwd or ".") / target_script).exists()
+                        script_in_sandbox = (Path(s_root) / target_script).exists()
+                        if script_in_cwd:
+                            pass
+                        elif script_in_sandbox:
                             exec_cwd = s_root
-                        elif target_script and Path(target_script).exists():
-                            exec_cwd = None
-                        elif s_root:
-                            exec_cwd = s_root
+                    elif exec_cwd is None and s_root:
+                        exec_cwd = s_root
 
                     result = self.process_manager.spawn(
                         cmd=cmd,

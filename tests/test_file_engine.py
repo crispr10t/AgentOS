@@ -142,3 +142,15 @@ def test_file_search_nonexistent_directory_graceful(file_engine: FileEngine):
     assert res.success is True
     assert res.data == []
     assert "No directory named" in (res.output or "")
+
+
+def test_file_write_unescapes_literal_newlines(file_engine: FileEngine):
+    """Verify that file_write unescapes literal \n sequences when content has no real newlines."""
+    raw_content = "import os\\nimport sys\\nprint('hello')\\n"
+    res = file_engine.file_write("unescaped.py", raw_content)
+    assert res.success is True
+
+    read_res = file_engine.file_read("unescaped.py")
+    assert read_res.success is True
+    assert read_res.output == "import os\nimport sys\nprint('hello')\n"
+

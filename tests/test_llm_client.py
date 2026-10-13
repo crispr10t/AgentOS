@@ -22,6 +22,7 @@ def test_llm_config_defaults():
     assert config.provider == LLMProvider.GROQ
     assert config.groq_model == "llama-3.3-70b-versatile"
     assert config.groq_base_url == "https://api.groq.com/openai/v1"
+    assert config.gemini_model == "gemini-3.8-flash"
     assert config.auto_fallback is True
     assert config.timeout_sec > 0
 
@@ -117,7 +118,7 @@ def test_groq_fallback_to_gemini_on_error():
         mock_gemini.return_value = LLMResponse(
             content='{"plan_description": "Fallback Gemini plan", "steps": []}',
             provider="gemini",
-            model="gemini-2.5-flash",
+            model="gemini-3.8-flash",
             duration_sec=0.5,
         )
 
@@ -235,3 +236,47 @@ def test_check_connection():
     status_gemini = client_gemini.check_connection()
     assert status_gemini["configured_provider"] == "gemini"
     assert status_gemini["cloud_key_present"] is False
+
+
+def test_extract_retry_delay():
+    """Verifies parsing of rate limit delay expressions."""
+    err_ms = RuntimeError("Rate limit reached. Please try again in 480ms.")
+    delay = LLMClient._extract_retry_delay(err_ms)
+    assert 0.5 <= delay <= 0.6
+
+    err_s = RuntimeError("Rate limit reached. Please try again in 2.5s.")
+    delay_s = LLMClient._extract_retry_delay(err_s)
+    assert 2.5 <= delay_s <= 2.7
+
+    err_default = RuntimeError("Rate limit exceeded.")
+    assert LLMClient._extract_retry_delay(err_default, default=1.5) == 1.5
+
+
+def test_groq_transient_rate_limit_retry():
+    """Verifies _call_groq retries on transient rate limits before succeeding."""
+    config = LLMConfig(
+        provider=LLMProvider.GROQ,
+        groq_api_key="gsk_test_key",
+        groq_model="llama-3.3-70b-versatile",
+    )
+    client = LLMClient(config=config)
+
+    mock_chat = MagicMock()
+    mock_choice = MagicMock()
+    mock_choice.message.content = '{"plan_description": "Recovered plan", "steps": []}'
+    mock_chat.choices = [mock_choice]
+    mock_chat.usage = {"total_tokens": 50}
+
+    rate_limit_err = RuntimeError("Error code: 429 - Rate limit reached. Please try again in 50ms.")
+
+    mock_openai_instance = MagicMock()
+    mock_openai_instance.chat.completions.create.side_effect = [rate_limit_err, mock_chat]
+
+    with patch("openai.OpenAI", return_value=mock_openai_instance), \
+         patch("time.sleep") as mock_sleep:
+        resp = client.generate(prompt="Do action")
+        assert resp.provider == "groq"
+        assert "Recovered plan" in resp.content
+        assert mock_openai_instance.chat.completions.create.call_count == 2
+        mock_sleep.assert_called_once()
+

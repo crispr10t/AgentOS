@@ -86,7 +86,7 @@ class PrivilegeGate:
             return False
         if request.ring != PrivilegeRing.RING_0:
             return False
-        if request.syscall == SyscallType.APP_OPEN:
+        if request.syscall in (SyscallType.APP_OPEN, SyscallType.APP_CLOSE):
             app_target = request.params.get("app", "")
             if app_target and self.is_app_whitelisted(app_target):
                 return False

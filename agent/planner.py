@@ -334,6 +334,13 @@ def sanitize_step_params(step: PlanStep) -> None:
                     f"All paths must be contained within the sandbox root."
                 )
 
+    # 3. Content unescaping for FILE_WRITE
+    if step.syscall == SyscallType.FILE_WRITE:
+        content = params.get("content")
+        if isinstance(content, str) and "\\n" in content and "\n" not in content:
+            params["content"] = content.replace("\\r\\n", "\n").replace("\\n", "\n").replace("\\t", "\t")
+
+
 
 class AgentPlanner:
     """Cognitive Shell compiler that turns natural language into validated Syscall Plans."""

@@ -370,3 +370,92 @@ def test_supervisor_worker_cancellation(qapp):
     assert len(finished) == 1
     assert finished[0][0] is False
     assert "Aborted" in finished[0][1]
+
+
+def test_main_window_priority_scheduling_selection(qapp):
+    """Verifies that selecting 'Priority' policy does not crash with ValueError and executes cleanly."""
+    planner = DummyPlanner()
+    dispatcher = SyscallDispatcher()
+    window = MainWindow(planner=planner, dispatcher=dispatcher)
+
+    window.policy_combo.setCurrentText("Priority")
+    assert window.policy_combo.currentText() == "Priority"
+
+    window.prompt_input.setText("Inspect system info with priority")
+    # Must not raise ValueError: 'Priority' is not a valid SchedulingPolicy
+    window.on_execute_clicked()
+
+    assert window._worker is not None
+    assert window._worker.policy == SchedulingPolicy.PRIORITY
+    window._worker.wait(4000)
+    qapp.processEvents()
+
+    assert not window.execute_btn.isHidden()
+    window.close()
+
+
+def test_main_window_consecutive_runs_monotonic_pids_no_overwriting(qapp):
+    """Verifies that subsequent executions allocate unique monotonic PIDs without overwriting previous PCB rows."""
+    planner = DummyPlanner()
+    dispatcher = SyscallDispatcher()
+    window = MainWindow(planner=planner, dispatcher=dispatcher)
+
+    # Execution 1: DummyPlanner generates 2 steps (PIDs 100, 101)
+    window.prompt_input.setText("First multi-step instruction")
+    window.on_execute_clicked()
+    assert window._worker is not None
+    window._worker.wait(4000)
+    qapp.processEvents()
+
+    assert window.pcb_table.table.rowCount() == 2
+    row0_pid = window.pcb_table.table.item(0, 0).text()
+    row1_pid = window.pcb_table.table.item(1, 0).text()
+    assert row0_pid == "#100"
+    assert row1_pid == "#101"
+    assert window._next_pid == 102
+
+    # Execution 2: DummyPlanner generates another 2 steps (should get PIDs 102, 103)
+    window.prompt_input.setText("Second instruction")
+    window.on_execute_clicked()
+    assert window._worker is not None
+    window._worker.wait(4000)
+    qapp.processEvents()
+
+    # Table must now contain all 4 processes without having overwritten row 0 or 1
+    assert window.pcb_table.table.rowCount() == 4
+    assert window.pcb_table.table.item(0, 0).text() == "#100"
+    assert window.pcb_table.table.item(1, 0).text() == "#101"
+    assert window.pcb_table.table.item(2, 0).text() == "#102"
+    assert window.pcb_table.table.item(3, 0).text() == "#103"
+    assert window._next_pid == 104
+
+    window.close()
+
+
+def test_pcb_registry_clear_button(qapp):
+    """Verifies that clicking the Clear button resets the PCB table and kernel PID allocator."""
+    planner = DummyPlanner()
+    dispatcher = SyscallDispatcher()
+    window = MainWindow(planner=planner, dispatcher=dispatcher)
+
+    window.prompt_input.setText("Inspect system info")
+    window.on_execute_clicked()
+    assert window._worker is not None
+    window._worker.wait(4000)
+    qapp.processEvents()
+
+    assert window.pcb_table.table.rowCount() >= 1
+    assert len(window.pcb_table_data) >= 1
+    assert window._next_pid > 100
+
+    # Click Process Registry Clear button
+    window.pcb_table.clear_btn.click()
+    qapp.processEvents()
+
+    assert window.pcb_table.table.rowCount() == 0
+    assert len(window.pcb_table_data) == 0
+    assert window.scheduler.is_empty()
+    assert window._next_pid == 100
+    assert "Tasks: 0" in window.pcb_table.count_badge.text()
+
+    window.close()
